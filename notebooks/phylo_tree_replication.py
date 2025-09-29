@@ -2,7 +2,15 @@
 from datasets import load_dataset
 from pprint import pprint
 
+import random
+random.seed(42)
+
 from tqdm import tqdm
+
+NUM_SPECIES = 1024  # Number of species to sample (for demo; set higher for real use)
+NUM_SAMPLES = 10  # Number of samples per genome
+REGION_LENGTH = 4000  # Length of each genomic region to sample (bp)
+AVERAGE_OVER_LAST_BP = 2000  # Only average activations over the last N bp of each region
 
 # Example: Load a JSON dataset from the Hugging Face Hub
 # Replace 'username/dataset_name' with the actual dataset path
@@ -23,24 +31,23 @@ pprint(dataset['train'][0]) # record, text
 
 print(len(dataset["train"]), "\n")
 # Sort the dataset by text length (descending) and sample from the longest
-NUM_SPECIES = 256  # Number of species to sample (for demo; set higher for real use)
+
 # Get all items and their indices
 items_with_length = [
     (i, item.get('text', '')) for i, item in enumerate(dataset['train'])
 ]
 # Sort by text length descending
-items_with_length.sort(key=lambda x: len(x[1]), reverse=True)
+# Filter for sequence lengths greater than num_samples * region_length
+min_length = NUM_SAMPLES * REGION_LENGTH
+items_with_length = [item for item in items_with_length if len(item[1]) > min_length]
+# items_with_length.sort(key=lambda x: len(x[1]), reverse=True)
+random.shuffle(items_with_length)
 # Take the top num_items
 for idx, text in items_with_length[:NUM_SPECIES]:
     pipe_count = text.count('|')
     print(f"Item {idx}: {pipe_count} pipe characters. Text length: {len(text)}")
 
-# %%  - sampling
-# Configurable variables
-REGION_LENGTH = 4000  # Length of each genomic region to sample (bp)
-AVERAGE_OVER_LAST_BP = 2000  # Only average activations over the last N bp of each region
-
-import random
+# %%  - SAMPLING
 
 def tiling_helper(
     text: str,
@@ -92,7 +99,7 @@ def tiling_helper(
         if len(used_intervals) >= (text_length // sample_region_length):
             break
 
-    if covered_bp < target_coverage:
+    if coverage_fraction is not None and covered_bp < target_coverage:
         print(f"Warning: Only able to cover {covered_bp} bp out of requested {target_coverage} bp ({coverage_fraction*100:.1f}% of text).")
 
     return regions
@@ -108,34 +115,34 @@ from evo2 import Evo2
 MODEL = "1b"  # "1b" or "7b"
 
 evo2_model = Evo2('evo2_1b_base') if MODEL == "1b" else Evo2('evo2_7b_base')
-sequence = 'ACGT'
+# sequence = 'ACGT'
 
-input_ids = torch.tensor(
-    evo2_model.tokenizer.tokenize(sequence),
-    dtype=torch.int,
-).unsqueeze(0).to('cuda:0')
+# input_ids = torch.tensor(
+#     evo2_model.tokenizer.tokenize(sequence),
+#     dtype=torch.int,
+# ).unsqueeze(0).to('cuda:0')
 
-layer_name = 'blocks.17.mlp.l3'
+# layer_name = 'blocks.17.mlp.l3'
 
-outputs, embeddings = evo2_model(input_ids, return_embeddings=True, layer_names=[layer_name])
+# outputs, embeddings = evo2_model(input_ids, return_embeddings=True, layer_names=[layer_name])
 
-print('Embeddings shape: ', embeddings[layer_name].shape)
+# print('Embeddings shape: ', embeddings[layer_name].shape)
 # %%
 
 # Save the loaded dataset to disk for local caching
-dataset.save_to_disk("data/gtdb_v220_imgpr_hf_cache")
-print("Dataset cached locally at data/gtdb_v220_imgpr_hf_cache")
+# dataset.save_to_disk("data/gtdb_v220_imgpr_hf_cache")
+# print("Dataset cached locally at data/gtdb_v220_imgpr_hf_cache")
 
 # %%
 print(dataset)
 # %%
 print(dataset["train"])
 # %%
-midtrain_data_sample = load_dataset(
-    'json',
-    data_files='https://huggingface.co/datasets/arcinstitute/opengenome2/resolve/main/json/midtraining_specific/imgpr/data_imgpr_test_chunk1.jsonl.gz'
-)
-pprint(dataset['train'][0])
+# midtrain_data_sample = load_dataset(
+#     'json',
+#     data_files='https://huggingface.co/datasets/arcinstitute/opengenome2/resolve/main/json/midtraining_specific/imgpr/data_imgpr_test_chunk1.jsonl.gz'
+# )
+# pprint(dataset['train'][0])
 # %%
 
 regions_list = []
@@ -143,7 +150,7 @@ for idx, text in items_with_length[:NUM_SPECIES]:
     regions_list.append(tiling_helper(
             text, 
             sample_region_length=REGION_LENGTH,
-            num_samples=10  # Fixed number of samples per genome for testing
+            num_samples=NUM_SAMPLES  # Fixed number of samples per genome for testing
         )
     )
     print(f"Item {idx}: {len(regions_list[-1])} regions sampled.")
@@ -153,7 +160,7 @@ print(regions_list[0])
 print(len(regions_list[0]))
 # %%
 print(evo2_model.model)
-# %%
+# %% - GET SEQUENCE EMBEDDINGS
 import gc
 from itertools import batched
 torch.cuda.empty_cache()
@@ -224,7 +231,7 @@ for filename in sorted(os.listdir("data/embeddings")):
         embedding = torch.load(os.path.join("data/embeddings", filename))
         mean_embeddings.append(embedding)
 # %%
-print(len(mean_embeddings))
+print(len(mean_embeddings[0]))
 # %%
 print(len(mean_embeddings))  # list of length num_items, each item is a tensor of shape (D_MODEL,)
 # %%
