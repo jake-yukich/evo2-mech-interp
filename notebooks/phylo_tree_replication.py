@@ -16,7 +16,9 @@ dataset = load_dataset(
 pprint(dataset['train'][0]) # record, text
 
 
-# %%
+# %% - Get items with longest sequences
+# TODO: consider how sampling might be biased by taking top n sorted sequences
+
 print(len(dataset["train"]), "\n")
 # Sort the dataset by text length (descending) and sample from the longest
 num_items = 10
@@ -88,18 +90,18 @@ def tiling_helper(
 
     return regions
 
-regions_list = []
-for idx, text in items_with_length[:num_items]:
-    regions_list.append(tiling_helper(text, sample_region_length=REGION_LENGTH))
-    print(f"Item {idx}: {len(regions_list[-1])} regions sampled.")
+# regions_list = []
+# for idx, text in items_with_length[:num_items]:
+#     regions_list.append(tiling_helper(text, sample_region_length=REGION_LENGTH))
+#     print(f"Item {idx}: {len(regions_list[-1])} regions sampled.")
 
 # %%
 import torch
 from evo2 import Evo2
 
 evo2_model = Evo2('evo2_7b')
-
 sequence = 'ACGT'
+
 input_ids = torch.tensor(
     evo2_model.tokenizer.tokenize(sequence),
     dtype=torch.int,
@@ -128,4 +130,40 @@ midtrain_data_sample = load_dataset(
     data_files='https://huggingface.co/datasets/arcinstitute/opengenome2/resolve/main/json/midtraining_specific/imgpr/data_imgpr_test_chunk1.jsonl.gz'
 )
 pprint(dataset['train'][0])
+# %%
+
+regions_list = []
+for idx, text in items_with_length[:num_items]:
+    regions_list.append(tiling_helper(text, sample_region_length=REGION_LENGTH))
+    print(f"Item {idx}: {len(regions_list[-1])} regions sampled.")
+print(len(regions_list))
+# %%
+print(regions_list[0])
+print(len(regions_list[0]))
+# %%
+print(evo2_model.model)
+# %%
+# inputs_by_species = []
+mean_embeddings = []
+
+for genome in regions_list: # genome is a list of regions
+    # for region in regions_list:
+    input_ids = torch.tensor(
+        evo2_model.tokenizer.tokenize(genome),
+        dtype=torch.int,
+    ).unsqueeze(0).to('cuda:0')
+    tokenized_input_ids = input_ids
+
+    layer_name = 'blocks.24.mlp.l3'
+
+    outputs, embeddings = evo2_model(tokenized_input_ids, return_embeddings=True, layer_names=[layer_name])
+
+    print('Embeddings shape: ', embeddings[layer_name].shape)
+    mean_embeddings.append(embeddings[layer_name][AVERAGE_OVER_LAST_BP:].mean(dim=0).mean())
+
+print(mean_embeddings)
+# %%
+print(len(mean_embeddings))
+# %%
+print(mean_embeddings[0])
 # %%
