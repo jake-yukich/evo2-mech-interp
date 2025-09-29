@@ -271,6 +271,16 @@ fig.update_layout(
 
 fig.show()
 # %%
-records = [(i, item.get('record', '')) for i, item in enumerate(dataset['train'])]
-len(records)
+records = [item.get('record', '') for i, item in enumerate(dataset['train']) if i < 20]
+# %%
+print(records)
+# %%
+%autoreload 2
+from id2taxonomy import get_taxonomy_from_accession
+df = get_taxonomy_from_accession(records[:10])
+df
+# %%
+# %%
+df.empty
+
 # %%
