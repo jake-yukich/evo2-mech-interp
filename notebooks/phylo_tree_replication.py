@@ -2,6 +2,8 @@
 from datasets import load_dataset
 from pprint import pprint
 
+from tqdm import tqdm
+
 # Example: Load a JSON dataset from the Hugging Face Hub
 # Replace 'username/dataset_name' with the actual dataset path
 dataset = load_dataset(
@@ -98,8 +100,9 @@ def tiling_helper(
 # %%
 import torch
 from evo2 import Evo2
+MODEL = "1b"  # "1b" or "7b"
 
-evo2_model = Evo2('evo2_7b')
+evo2_model = Evo2('evo2_1b_base') if MODEL == "1b" else Evo2('evo2_7b_base')
 sequence = 'ACGT'
 
 input_ids = torch.tensor(
@@ -107,7 +110,7 @@ input_ids = torch.tensor(
     dtype=torch.int,
 ).unsqueeze(0).to('cuda:0')
 
-layer_name = 'blocks.28.mlp.l3'
+layer_name = 'blocks.17.mlp.l3'
 
 outputs, embeddings = evo2_model(input_ids, return_embeddings=True, layer_names=[layer_name])
 
@@ -118,8 +121,6 @@ print('Embeddings shape: ', embeddings[layer_name].shape)
 dataset.save_to_disk("data/gtdb_v220_imgpr_hf_cache")
 print("Dataset cached locally at data/gtdb_v220_imgpr_hf_cache")
 
-# %%
-pprint(dataset["train"].keys())
 # %%
 print(dataset)
 # %%
@@ -143,27 +144,48 @@ print(len(regions_list[0]))
 # %%
 print(evo2_model.model)
 # %%
+import gc
+from itertools import batched
+torch.cuda.empty_cache()
+gc.collect()
+from time import perf_counter
+from tqdm import tqdm
+
+D_MODEL_7B = 4096
+D_MODEL_1B = 1920
+D_MODEL = D_MODEL_1B if MODEL == "1b" else D_MODEL_7B
 # inputs_by_species = []
 mean_embeddings = []
 
-for genome in regions_list: # genome is a list of regions
-    # for region in regions_list:
-    input_ids = torch.tensor(
-        evo2_model.tokenizer.tokenize(genome),
-        dtype=torch.int,
-    ).unsqueeze(0).to('cuda:0')
-    tokenized_input_ids = input_ids
+for genome in tqdm(regions_list): # genome is a list of regions
+    sample_embeddings = []
+    sample_times = []
+    for sample in genome:
+        sample_start = perf_counter()
+        input_ids = torch.tensor(
+            evo2_model.tokenizer.tokenize(sample),
+            dtype=torch.int,
+        ).unsqueeze(0).to('cuda:0')
+        tokenized_input_ids = input_ids
 
-    layer_name = 'blocks.24.mlp.l3'
+        layer_name = 'blocks.24.mlp.l3'
 
-    outputs, embeddings = evo2_model(tokenized_input_ids, return_embeddings=True, layer_names=[layer_name])
+        outputs, embeddings = evo2_model(tokenized_input_ids, return_embeddings=True, layer_names=[layer_name])
 
-    print('Embeddings shape: ', embeddings[layer_name].shape)
-    mean_embeddings.append(embeddings[layer_name][AVERAGE_OVER_LAST_BP:].mean(dim=0).mean())
+        sample_embeddings.append(embeddings[layer_name])
+        sample_times.append(perf_counter() - sample_start)
+
+    print(f"Mean sample time (s): {sum(sample_times)/len(sample_times):.3f} over {len(sample_times)} samples")
+    sample_embeddings = torch.cat(sample_embeddings, dim=0)
+    assert sample_embeddings.shape == (len(genome), REGION_LENGTH, D_MODEL), f"{sample_embeddings.shape = }"
+    sample_embeddings = sample_embeddings[:, AVERAGE_OVER_LAST_BP:, :].mean(dim=(0, 1))
+    assert sample_embeddings.shape == (D_MODEL,)
+    mean_embeddings.append(sample_embeddings)
 
 print(mean_embeddings)
 # %%
 print(len(mean_embeddings))
 # %%
-print(mean_embeddings[0])
+print(len(mean_embeddings))  # list of length num_items, each item is a tensor of shape (D_MODEL,)
 # %%
+mean_embeddings_tensor = torch.stack(mean_embeddings, dim=0)
