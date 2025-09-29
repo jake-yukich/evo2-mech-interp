@@ -290,4 +290,53 @@ df
 # %%
 df.empty
 
+# %% - ATTEMPT TO GET TAX INFO
+from Bio import Entrez
+Entrez.email = "jake.yukich@gmail.com"
+
+import time
+from evo2.utils import make_phylotag_from_gbif
+
+def record_to_phylotag(record: str) -> dict | None:
+    """
+    Single record -> phylotag, using Evo 2's GBIF function
+    """
+    try:
+        handle = Entrez.efetch(db="nucleotide", id=record, rettype="gb", retmode="xml")
+        record = Entrez.read(handle)[0]
+        handle.close()
+
+        organism = record.get('GBSeq_organism', '')
+
+        if organism:
+            time.sleep(0.2) # might be able to get away with less than 0.5
+            return make_phylotag_from_gbif(organism)
+    except Exception as e:
+        print(f"Error getting phylotag for {record}: {e}")
+        return None
+
+# %%
+idx_record_text = [
+    (i, item.get('record', ''), item.get('text', '')) for i, item in enumerate(dataset['train'])
+]
+min_length = NUM_SAMPLES * REGION_LENGTH
+idx_record_text = [triple for triple in idx_record_text if len(triple[2]) > min_length]
+random.shuffle(idx_record_text)
+
+phylotags = {}
+for i, (idx, record, text) in enumerate(idx_record_text[:NUM_SPECIES]):
+    tag = record_to_phylotag(record)
+    print(f"Success on item {idx}: {tag} ({i+1}/{NUM_SPECIES})")
+
+    phylotags[record] = tag
+
+# phylotags = {record: record_to_phylotag(record) for idx, record, text in idx_record_text[:NUM_SPECIES]}
+pprint(phylotags)
+# %% - SAVE PHYLOTAGS TO DISK
+# import json
+
+# with open("phylotags.json", "w") as f:
+#     json.dump(phylotags, f, indent=2)
+# print("Phylotags saved to phylotags.json")
+
 # %%

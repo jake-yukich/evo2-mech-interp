@@ -1,20 +1,22 @@
-from Bio import SeqIO
 # from huggingface_hub import hf_hub_download
-from datasets import load_dataset
 import gzip
+
+from Bio import SeqIO
+
 
 def load_fasta_from_hf():
     # Download the fasta file from Hugging Face Hub
+    import os
     import tarfile
     import tempfile
-    import os
+
     from huggingface_hub import hf_hub_download
 
     # Download the tar file from Hugging Face Hub
     tar_path = hf_hub_download(
         repo_id="arcinstitute/opengenome2",
         filename="batch1.tar",
-        subfolder="fasta/gtdb_v220/v214"
+        subfolder="fasta/gtdb_v220/v214",
     )
 
     # Extract FASTA files from the tar archive to a temporary directory
@@ -26,7 +28,10 @@ def load_fasta_from_hf():
     fasta_files = [
         os.path.join(temp_dir, f)
         for f in os.listdir(temp_dir)
-        if f.endswith(".fasta") or f.endswith(".fa") or f.endswith(".fna") or f.endswith(".gz")
+        if f.endswith(".fasta")
+        or f.endswith(".fa")
+        or f.endswith(".fna")
+        or f.endswith(".gz")
     ]
     # Open the gzipped FASTA file
     with gzip.open(file_path, "rt") as file:
@@ -43,8 +48,9 @@ def load_fasta_from_hf():
             else:
                 print("Description:", description)
 
+
 # Example usage:
-# The file is in: 
+# The file is in:
 # https://huggingface.co/datasets/arcinstitute/opengenome2/tree/main/fasta/gtdb_v220/v214/gtdb_v220_genomes_v214_20240925.fasta.gz
 repo_id = "arcinstitute/opengenome2"
 filename = "gtdb_v220_genomes_v214_20240925.fasta.gz"

@@ -1,5 +1,7 @@
 import os
+
 from datasets import load_dataset
+
 
 def main():
     data_dir = "data/gtdb_v220_imgpr"
@@ -13,6 +15,7 @@ def main():
     )
 
     print(f"Downloaded {len(dataset)} records to {data_dir}")
+
 
 if __name__ == "__main__":
     main()
