@@ -27,6 +27,7 @@ if hasattr(torch.backends.cuda, "matmul"):
 
 NUM_SPECIES = 1024  # Number of species to sample (for demo; set higher for real use)
 NUM_SAMPLES = 10  # Number of samples per genome
+COVERAGE_FRACTION = 0.05  # Fraction of genome to cover with samples
 REGION_LENGTH = 4000  # Length of each genomic region to sample (bp)
 AVERAGE_OVER_LAST_BP = (
     2000  # Only average activations over the last N bp of each region
@@ -38,7 +39,8 @@ D_MODEL = D_MODEL_1B if MODEL == "1b" else D_MODEL_7B if "7b" else None
 BATCH_SIZE = 48 if MODEL == "1b" else 8  # Start here and increase if possible
 RANDOM_SEED = 42
 LAYER_NAME = "blocks.24.mlp.l3"  # Move outside loop
-CACHE_PATH = f"data/embeddings/model_{MODEL}/num_samples_{NUM_SAMPLES}/layer_{LAYER_NAME}/"
+# CACHE_PATH = f"data/embeddings/model_{MODEL}/num_samples_{NUM_SAMPLES}/layer_{LAYER_NAME}/"
+CACHE_PATH = f"data/embeddings/model_{MODEL}/coverage_frac_{COVERAGE_FRACTION}/layer_{LAYER_NAME}/"
 
 os.makedirs("data/embeddings", exist_ok=True)
 os.makedirs(CACHE_PATH, exist_ok=True)
@@ -66,10 +68,13 @@ def preprocess(df: pd.DataFrame, min_length: int, subset: int) -> pd.DataFrame:
     """Filter sequences by minimum length, shuffle and return a subset."""
     df["sequence_length"] = df["text"].apply(len)
     filtered_df = df[df["sequence_length"] > min_length]
-    shuffled_df = filtered_df.sample(frac=1, random_state=RANDOM_SEED).reset_index()
+    shuffled_df = filtered_df.sample(frac=1, random_state=RANDOM_SEED).reset_index(drop=True)
+    shuffled_df = shuffled_df.rename(columns={"text": "sequence"})
     return shuffled_df.head(subset)
 
 df = preprocess(df, NUM_SAMPLES * REGION_LENGTH, subset=NUM_SPECIES)
+df.to_csv(f"{CACHE_PATH}/genomes_metadata.csv", index=False)
+df.head()
 
 # %%  - SAMPLING
 def overlaps(start: int, end: int, intervals: list[tuple[int, int]]) -> bool:
@@ -145,7 +150,10 @@ samples = {
 }
 for row in df.itertuples():
     sampled_regions = sample_genome(
-        row.text, sample_region_length=REGION_LENGTH, num_samples=NUM_SAMPLES
+        row.sequence, 
+        sample_region_length=REGION_LENGTH, 
+        # num_samples=NUM_SAMPLES
+        coverage_fraction=COVERAGE_FRACTION
     )
     samples["genome_idx"].extend([row.Index] * len(sampled_regions))
     samples["sample"].extend(sampled_regions)
@@ -153,10 +161,10 @@ for row in df.itertuples():
         break
 
 samples_df = pd.DataFrame(samples)
+samples_df.to_csv(f"{CACHE_PATH}/sampled_regions.csv", index=False)
 samples_df.head()
 
-# %%
-
+# %% - Load model
 evo2_model = Evo2("evo2_1b_base") if MODEL == "1b" else Evo2("evo2_7b_base")
 
 # %%
@@ -226,8 +234,7 @@ with torch.no_grad():
         sample_embeddings = batch_inference(
             tokenized_samples_from_genome, evo2_model, BATCH_SIZE
         )
-        genome = genome_df[genome_df["genome_idx"] == genome_idx, "sample"]
-        genome_hash = hashlib.sha256(genome.encode()).hexdigest()
+        genome_hash = hashlib.sha256(df.at[genome_idx, "sequence"].encode()).hexdigest()
 
         if os.path.exists(f"{CACHE_PATH}/genome_{genome_idx}_hash_{genome_hash}.pt"):
             print(f"Skipping genome {genome_idx}, already processed.")
