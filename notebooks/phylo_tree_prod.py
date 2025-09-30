@@ -35,7 +35,7 @@ AVERAGE_OVER_LAST_BP = (
 )
 D_MODEL_7B = 4096
 D_MODEL_1B = 1920
-MODEL = "1b"  # "1b" or "7b"
+MODEL = "7b"  # "1b" or "7b"
 D_MODEL = D_MODEL_1B if MODEL == "1b" else D_MODEL_7B if "7b" else None
 BATCH_SIZE = 48 if MODEL == "1b" else 8  # Start here and increase if possible
 RANDOM_SEED = 42
@@ -187,7 +187,8 @@ samples_df.to_csv(f"{CACHE_PATH}/sampled_regions.csv", index=False)
 samples_df.head()
 
 # %% - Load model
-evo2_model = Evo2("evo2_1b_base") if MODEL == "1b" else Evo2("evo2_7b_base")
+evo2_model = Evo2("evo2_1b_base") if MODEL == "1b" else Evo2("evo2_7b")
+print(f"Loaded Evo2 model with {sum(p.numel() for p in evo2_model.model.parameters() if p.requires_grad):,} parameters")
 
 # %%
 torch.cuda.empty_cache()
