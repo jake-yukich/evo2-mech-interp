@@ -339,4 +339,114 @@ pprint(phylotags)
 #     json.dump(phylotags, f, indent=2)
 # print("Phylotags saved to phylotags.json")
 
+# %% - GET PHYLOGENETIC TREE FROM GTDB
+import pandas as pd
+import numpy as np
+
+from scipy.cluster import hierarchy
+from scipy.spatial.distance import squareform
+import matplotlib.pyplot as plt
+
+def record_to_organism(record: str) -> str | None:
+    try:
+        handle = Entrez.efetch(db="nucleotide", id=record, rettype="gb", retmode="xml")
+        record = Entrez.read(handle)[0]
+        handle.close()
+
+        # time.sleep(0.1)
+        return record.get('GBSeq_organism', '')
+    except Exception as e:
+        print(f"Error getting organism for {record}: {e}")
+        return None
+
+def organisms_to_gtdb(records: list[str], metadata: pd.DataFrame) -> dict:
+    """
+    Returns a dictionary mapping of records to their GTDB accession, taxonomy, and organism:
+    {
+        "record": {
+            "gtdb_accession": "accession",
+            "gtdb_taxonomy": "taxonomy",
+            "organism": "organism",
+        }
+    }
+
+    If no match is found, the value is None.
+    """
+    organisms = [record_to_organism(record) for record in records]
+    mappings = {}
+
+    for record, organism in zip(records, organisms):
+        exact_matches = metadata[metadata["ncbi_organism_name"] == organism]
+        m = exact_matches.iloc[0]
+
+        if m:
+            mappings[record] = {
+                "gtdb_accession": m["accession"],
+                "gtdb_taxonomy": m["gtdb_taxonomy"],
+                "organism": organism,
+            }
+        else:
+            mappings[record] = {
+                "gtdb_accession": None,
+                "gtdb_taxonomy": None,
+                "organism": organism,
+            }
+
+    return mappings
+
+def get_gtdb_tree(mappings: dict, tree_file: str = "data/gtdb/bac120_r220.tree") -> np.ndarray, list[str]:
+    """
+    Returns a tuple of (distance_matrix, mapped_records), where:
+        distance_matrix: (n, n) array of phylogenetic distances between GTDB accessions
+        mapped_records: list of records that were successfully mapped
+    """
+    from ete3 import Tree
+
+    print("Loading GTDB tree...")
+    tree = Tree(tree_file, format=1)
+
+    mapped_records = [record for record, mapping in mappings.items() if mapping["gtdb_accession"] is not None]
+    mapped_gtdb_accessions = [mapping["gtdb_accession"] for mapping in mappings.values() if mapping["gtdb_accession"] is not None]
+
+    # create a distance matrix
+    n = len(mapped_records)
+    distance_matrix = np.zeros((n, n))
+    
+    print(f"Calculating distance matrix for {n} records...")
+    for i in tqdm(range(n)):
+        for j in range(i+1, n):
+            gtdb_accession_i = mapped_gtdb_accessions[i]
+            gtdb_accession_j = mapped_gtdb_accessions[j]
+
+            node_i = tree.search_nodes(name=gtdb_accession_i)[0]
+            node_j = tree.search_nodes(name=gtdb_accession_j)[0]
+
+            distance_matrix[i, j] = distance_matrix[j, i] = node_i.get_distance(node_j)
+    
+    return distance_matrix, mapped_records
+
+def gtdb_pipeline(records: list[str]) -> dict:
+    # TODO: at some point implement getting the tree and metadata programmatically
+    # (currently retrieved via manual download)
+    
+    metadata = pd.read_csv("data/gtdb/bac120_metadata_r220.tsv.gz", sep="\t")
+    mappings = organisms_to_gtdb(records, metadata)
+
+    # report mapping success rate
+    success_rate = sum(1 for mapping in mappings.values() if mapping["gtdb_accession"] is not None) / len(mappings)
+    print(f"Mapping success rate: {success_rate:.2f}")
+
+    distance_matrix, mapped_records = get_gtdb_tree(mappings)
+
+    # TODO: tree building (e.g. using scipy.cluster.hierarchy)
+
+    return {
+        "distance_matrix": distance_matrix,
+        "mapped_records": mapped_records,
+    }
+
+
+# %% - TEST GTDB PIPELINE
+out = gtdb_pipeline(records[:10])
+pprint(out)
 # %%
