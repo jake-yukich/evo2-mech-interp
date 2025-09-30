@@ -1,5 +1,6 @@
 # %%
 import gc
+import json
 import os
 import random
 from itertools import batched, product
@@ -58,7 +59,14 @@ def load_data_from_hf(data_files: list[str]) -> pd.DataFrame:
     dataset = datasets.load_dataset("json", data_files=data_files)
     return pd.DataFrame(dataset["train"])
 
+def load_json(file_path: str) -> pd.DataFrame:
+    """
+    Load a JSON file into a pandas DataFrame.
+    """
+    with open(file_path) as f:
+        return json.load(f)
 
+phylotags = load_json("/root/evo2-mech-interp/notebooks/phylotags_1024.json")
 df = load_data_from_hf(data_files)
 
 # %% - Get items with longest sequences
@@ -72,7 +80,16 @@ def preprocess(df: pd.DataFrame, min_length: int, subset: int) -> pd.DataFrame:
     shuffled_df = shuffled_df.rename(columns={"text": "sequence"})
     return shuffled_df.head(subset)
 
-df = preprocess(df, NUM_SAMPLES * REGION_LENGTH, subset=NUM_SPECIES)
+def select_specific(df: pd.DataFrame, records: dict[str, str]) -> pd.DataFrame:
+    """Select specific records by their accession IDs."""
+    all_records = set(df["record"])
+    records = set(accession_id for accession_id, tag in records.items() if not ("C__NONE" in tag and "O__NONE" in tag and "F__NONE" in tag))
+    phylotags_with_enough_info = all_records & records
+    return df[df["record"].isin(phylotags_with_enough_info)].reset_index(drop=True).rename(columns={"text": "sequence"})
+
+
+# df = preprocess(df, NUM_SAMPLES * REGION_LENGTH, subset=NUM_SPECIES)
+df = select_specific(df, phylotags)
 df.to_csv(f"{CACHE_PATH}/genomes_metadata.csv", index=False)
 df.head()
 
@@ -119,6 +136,11 @@ def sample_genome(
     used_intervals = []
     regions = []
     attempts = 0
+
+    if coverage_fraction is not None:
+        print(f"Sampling to cover {target_coverage} bp ({coverage_fraction * 100:.1f}% of text)")
+    else:
+        print(f"Sampling {num_samples} regions of {sample_region_length} bp each")
 
     while covered_bp < target_coverage and attempts < max_attempts:
         start_pos = random.randint(0, text_length - sample_region_length)
@@ -273,10 +295,33 @@ embedding_3d = umap_fit_transform(mean_embeddings_tensor)
 
 # %%
 
-def plot_3d_embedding(embedding_3d: torch.Tensor, labels: list[str]) -> go.Figure:
-    """Plot 3D UMAP embedding using Plotly."""
+phylotags_df = pd.DataFrame.from_dict(phylotags, orient="index", columns=["phylotag"]).reset_index().rename(columns={"index": "record"})
+df = pd.merge(df, phylotags_df, on="record", how="left")
+df = df.dropna(subset=["phylotag"]).reset_index(drop=True)
+
+phylo_cols = ["domain", "phylum", "class", "order", "family", "genus", "species"]
+def split_phylotag(tag):
+    parts = tag.split(";")
+    values = [p.split("__", 1)[1] if "__" in p else None for p in parts]
+    # Pad missing values if tag is incomplete
+    values += [None] * (len(phylo_cols) - len(values))
+    return pd.Series(values, index=phylo_cols)
+
+df[phylo_cols] = df["phylotag"].apply(split_phylotag)
+df.head()
+
+# %%
+import plotly.express as px
+def plot_3d_embedding(embedding_3d: torch.Tensor, title: str, labels: list[str]) -> go.Figure:
+    """Plot 3D UMAP embedding using Plotly, coloring by categorical label."""
     assert embedding_3d.shape[1] == 3, "Embedding must be 3D"
     assert len(labels) == embedding_3d.shape[0], "Labels length must match number of points"
+
+    # Map labels to integers for coloring
+    unique_labels = sorted(set(labels))
+    color_map = {label: color for label, color in zip(unique_labels, px.colors.qualitative.Light24)}
+    colors = [color_map[label] for label in labels]
+
     fig = go.Figure(
         data=[
             go.Scatter3d(
@@ -284,20 +329,53 @@ def plot_3d_embedding(embedding_3d: torch.Tensor, labels: list[str]) -> go.Figur
                 y=embedding_3d[:, 1],
                 z=embedding_3d[:, 2],
                 mode="markers",
-                marker=dict(size=8, color="blue", opacity=0.7),
-                text=[f"Genome {i}" for i in range(len(embedding_3d))],
+                marker=dict(
+                    size=4,
+                    opacity=0.7,
+                    color=colors,
+                ),
+                text=[f"Genome {i}<br>Label: {labels[i]}" for i in range(len(embedding_3d))],
                 hovertemplate="<b>%{text}</b><br>UMAP 1: %{x}<br>UMAP 2: %{y}<br>UMAP 3: %{z}<extra></extra>",
+                showlegend=True,
             )
         ]
     )
 
+    # Add legend entries for each label
+    for label, color in color_map.items():
+        fig.add_trace(
+            go.Scatter3d(
+                x=[None], y=[None], z=[None],
+                mode="markers",
+                marker=dict(size=8, color=color),
+                name=label,
+                showlegend=True,
+            )
+        )
+
     fig.update_layout(
-        title="3D UMAP of Genome Embeddings",
+        title=title,
         scene=dict(xaxis_title="UMAP 1", yaxis_title="UMAP 2", zaxis_title="UMAP 3"),
         width=800,
         height=600,
+        legend=dict(itemsizing="constant"),
     )
     return fig
 
-fig = plot_3d_embedding(embedding_3d, labels=[f"Genome {i}" for i in range(len(embedding_3d))])
-fig.show()
+for category in ["class", "order", "family"]:
+    category_df = df.loc[:, ["record", category]]
+    mask = category_df[category].notna() & (category_df[category] != "NONE")
+    value_counts = category_df[mask][category].value_counts()
+    valid_values = value_counts[value_counts > 20].index
+    mask &= category_df[category].isin(valid_values)
+    indices = category_df[mask].index.tolist()
+    filtered_df = category_df.loc[indices].reset_index(drop=True)
+    filtered_embedding = embedding_3d[indices]
+    fig = plot_3d_embedding(
+        filtered_embedding, 
+        title=f"3D UMAP Colored by {category.capitalize()}",
+        labels=filtered_df[category].tolist()
+    )
+    fig.show()
+
+# %%
