@@ -2,18 +2,11 @@
 import gc
 import json
 import os
-import sys
 import random
 from itertools import batched, product
 from pprint import pprint
 from time import perf_counter
-from typing import Literal
-sys.path.append("..")  # For imports from parent dir
-from utils.distances import build_knn_graph, geodesic_distance, geodesic_distance_matrix, pairwise_cosine_similarity
-from utils.data import load_data_from_hf, load_phylotags, preprocess, filter_by_phylotags
-from utils.sampling import sample_genome
 
-import plotly.express as px
 import plotly.graph_objects as go
 import torch
 import umap
@@ -32,8 +25,6 @@ if hasattr(torch.backends.cuda, "matmul"):
         True  # Use TF32 for faster matmul on A100/H100
     )
 
-assert os.getcwd().endswith("evo2-mech-interp/notebooks"), "Run from notebooks/ directory"
-
 
 NUM_SPECIES = 1024  # Number of species to sample (for demo; set higher for real use)
 NUM_SAMPLES = 10  # Number of samples per genome
@@ -44,18 +35,13 @@ AVERAGE_OVER_LAST_BP = (
 )
 D_MODEL_7B = 4096
 D_MODEL_1B = 1920
-MODEL: Literal["1b", "7b"] = "7b" 
-D_MODEL = D_MODEL_1B if MODEL == "1b" else D_MODEL_7B if MODEL == "7b" else None
+MODEL = "7b"  # "1b" or "7b"
+D_MODEL = D_MODEL_1B if MODEL == "1b" else D_MODEL_7B if "7b" else None
 BATCH_SIZE = 48 if MODEL == "1b" else 8  # Start here and increase if possible
 RANDOM_SEED = 42
-LAYER_NAME = "blocks.24.mlp.l3"
-
-SAMPLING_CONFIG = {
-    "num_samples": None,
-    "coverage_fraction": COVERAGE_FRACTION,
-}
-SAMPLING_STR = f"num_samples_{NUM_SAMPLES}" if SAMPLING_CONFIG["num_samples"] is not None else f"coverage_frac_{COVERAGE_FRACTION}"
-CACHE_PATH = f"data/embeddings/model_{MODEL}/{SAMPLING_STR}/layer_{LAYER_NAME}/"
+LAYER_NAME = "blocks.24.mlp.l3"  # Move outside loop
+# CACHE_PATH = f"data/embeddings/model_{MODEL}/num_samples_{NUM_SAMPLES}/layer_{LAYER_NAME}/"
+CACHE_PATH = f"data/embeddings/model_{MODEL}/coverage_frac_{COVERAGE_FRACTION}/layer_{LAYER_NAME}/"
 
 os.makedirs("data/embeddings", exist_ok=True)
 os.makedirs(CACHE_PATH, exist_ok=True)
@@ -66,18 +52,119 @@ data_files = [
     "https://huggingface.co/datasets/arcinstitute/opengenome2/resolve/main/json/pretraining_or_both_phases/gtdb_v220_imgpr/data_gtdb_train_chunk1.jsonl.gz"
 ]
 
-phylotags = load_phylotags("/root/evo2-mech-interp/notebooks/phylotags_1024.json")
+def load_data_from_hf(data_files: list[str]) -> pd.DataFrame:
+    """
+    Load dataset from Hugging Face Hub or local files.
+    """
+    dataset = datasets.load_dataset("json", data_files=data_files)
+    return pd.DataFrame(dataset["train"])
+
+def load_json(file_path: str) -> pd.DataFrame:
+    """
+    Load a JSON file into a pandas DataFrame.
+    """
+    with open(file_path) as f:
+        return json.load(f)
+
+phylotags = load_json("/root/evo2-mech-interp/notebooks/phylotags_1024.json")
 df = load_data_from_hf(data_files)
 
 # %% - Get items with longest sequences
-# TODO: consider how sampling might be biased by dataset
+# TODO: consider how sampling might be biased by taking top n sorted sequences
 
-df = preprocess(df, min_length=5000, subset=10000, random_seed=RANDOM_SEED)
-df = filter_by_phylotags(df, phylotags)
-df = df.reset_index(drop=True)
+def preprocess(df: pd.DataFrame, min_length: int, subset: int) -> pd.DataFrame:
+    """Filter sequences by minimum length, shuffle and return a subset."""
+    df["sequence_length"] = df["text"].apply(len)
+    filtered_df = df[df["sequence_length"] > min_length]
+    shuffled_df = filtered_df.sample(frac=1, random_state=RANDOM_SEED).reset_index(drop=True)
+    shuffled_df = shuffled_df.rename(columns={"text": "sequence"})
+    return shuffled_df.head(subset)
+
+def select_specific(df: pd.DataFrame, records: dict[str, str]) -> pd.DataFrame:
+    """Select specific records by their accession IDs."""
+    all_records = set(df["record"])
+    records = set(accession_id for accession_id, tag in records.items() if not ("C__NONE" in tag and "O__NONE" in tag and "F__NONE" in tag))
+    phylotags_with_enough_info = all_records & records
+    return df[df["record"].isin(phylotags_with_enough_info)].reset_index(drop=True).rename(columns={"text": "sequence"})
+
+
+# df = preprocess(df, NUM_SAMPLES * REGION_LENGTH, subset=NUM_SPECIES)
+df = select_specific(df, phylotags)
 df.to_csv(f"{CACHE_PATH}/genomes_metadata.csv", index=False)
 df.head()
-# %%
+
+# %%  - SAMPLING
+def overlaps(start: int, end: int, intervals: list[tuple[int, int]]) -> bool:
+    """Helper, check if the interval (start, end) overlaps with any in intervals."""
+    for used_start, used_end in intervals:
+        if not (end <= used_start or start >= used_end):
+            return True
+    return False
+
+# TODO: shrink this function 
+def sample_genome(
+    text: str,
+    sample_region_length: int,
+    coverage_fraction: float | None = None,
+    num_samples: int | None = None,
+    max_attempts: int = 10000,
+) -> list[str]:
+    """
+    Randomly sample non-overlapping regions from the input text until at least
+    `coverage_fraction` (default 5%) of the text is covered OR `num_samples` (default 10) samples are obtained
+    .
+    Returns a list of non-overlapping sampled regions.
+    """
+    if (coverage_fraction is not None) and (num_samples is not None):
+        raise ValueError("Specify either coverage_fraction or num_samples, not both.")
+    if (coverage_fraction is None) and (num_samples is None):
+        raise ValueError("Specify either coverage_fraction or num_samples.")
+    text_length = len(text)
+
+    if text_length < sample_region_length:
+        print(
+            f"Warning: Text is shorter than sample_region_length ({text_length} < {sample_region_length})"
+        )
+        return []
+
+    target_coverage = (
+        int(text_length * coverage_fraction)
+        if coverage_fraction is not None
+        else num_samples * sample_region_length
+    )
+    covered_bp = 0
+    used_intervals = []
+    regions = []
+    attempts = 0
+
+    if coverage_fraction is not None:
+        print(f"Sampling to cover {target_coverage} bp ({coverage_fraction * 100:.1f}% of text)")
+    else:
+        print(f"Sampling {num_samples} regions of {sample_region_length} bp each")
+
+    while covered_bp < target_coverage and attempts < max_attempts:
+        start_pos = random.randint(0, text_length - sample_region_length)
+        end_pos = start_pos + sample_region_length
+
+        if not overlaps(start_pos, end_pos, used_intervals):
+            region = text[start_pos:end_pos]
+            regions.append(region)
+            used_intervals.append((start_pos, end_pos))
+            covered_bp += sample_region_length
+        attempts += 1
+
+        # If we've exhausted all possible non-overlapping regions, break
+        if len(used_intervals) >= (text_length // sample_region_length):
+            break
+
+    if coverage_fraction is not None and covered_bp < target_coverage:
+        print(
+            f"Warning: Only able to cover {covered_bp} bp out of requested {target_coverage} bp ({coverage_fraction * 100:.1f}% of text)."
+        )
+
+    return regions
+
+
 # Sample and save to new df where each row is a sampled region, referencing original genome
 samples = {
     "genome_idx": [],
@@ -87,7 +174,8 @@ for row in df.itertuples():
     sampled_regions = sample_genome(
         row.sequence, 
         sample_region_length=REGION_LENGTH, 
-        **SAMPLING_CONFIG
+        # num_samples=NUM_SAMPLES
+        coverage_fraction=COVERAGE_FRACTION
     )
     samples["genome_idx"].extend([row.Index] * len(sampled_regions))
     samples["sample"].extend(sampled_regions)
@@ -162,40 +250,36 @@ def batch_inference(
 
 print("Processing embeddings...")
 with torch.no_grad():
-    if os.path.exists(f"{CACHE_PATH}/all_genomes_embeddings.pt"):
-        print("Loading all genomes embeddings from cache...")
-        mean_embeddings_tensor = torch.load(f"{CACHE_PATH}/all_genomes_embeddings.pt")
-        assert mean_embeddings_tensor.shape[1] == D_MODEL, f"Expected: {D_MODEL}, Got: {mean_embeddings_tensor.shape[1]}"
-    else:
-        mean_embeddings = []
-        for genome_idx, tokenized_samples_from_genome in enumerate(
-            tqdm(tokenized_samples, desc="Processing genomes")
-        ):
-            sample_embeddings = batch_inference(
-                tokenized_samples_from_genome, evo2_model, BATCH_SIZE
-            )
-            genome_hash = hashlib.sha256(df.at[genome_idx, "sequence"].encode()).hexdigest()
+    mean_embeddings = []
+    for genome_idx, tokenized_samples_from_genome in enumerate(
+        tqdm(tokenized_samples, desc="Processing genomes")
+    ):
+        sample_embeddings = batch_inference(
+            tokenized_samples_from_genome, evo2_model, BATCH_SIZE
+        )
+        genome_hash = hashlib.sha256(df.at[genome_idx, "sequence"].encode()).hexdigest()
 
-            if os.path.exists(f"{CACHE_PATH}/genome_{genome_idx}_hash_{genome_hash}.pt"):
-                print(f"Skipping genome {genome_idx}, already processed.")
-                continue
-            
-            genome_embedding = sample_embeddings[:, -AVERAGE_OVER_LAST_BP:, :].mean(
-                dim=(0, 1)
-            )
-            assert genome_embedding.shape == (D_MODEL,)
-            
-            torch.save(
-                genome_embedding, f"{CACHE_PATH}/{genome_hash}.pt"
-            )
-            
-            mean_embeddings.append(genome_embedding)
-        mean_embeddings_tensor = torch.stack(mean_embeddings, dim=0)
-        assert mean_embeddings_tensor.shape == (
-            len(mean_embeddings),
-            D_MODEL,
-        ), f"Expected: {(len(mean_embeddings), D_MODEL)}, Got: {mean_embeddings_tensor.shape}"
-        torch.save( 
+        if os.path.exists(f"{CACHE_PATH}/genome_{genome_idx}_hash_{genome_hash}.pt"):
+            print(f"Skipping genome {genome_idx}, already processed.")
+            continue
+        
+        genome_embedding = sample_embeddings[:, -AVERAGE_OVER_LAST_BP:, :].mean(
+            dim=(0, 1)
+        )
+        assert genome_embedding.shape == (D_MODEL,)
+        
+        torch.save(
+            genome_embedding, f"{CACHE_PATH}/{genome_hash}.pt"
+        )
+        
+        mean_embeddings.append(genome_embedding)
+    mean_embeddings_tensor = torch.stack(mean_embeddings, dim=0)
+    assert mean_embeddings_tensor.shape == (
+        len(mean_embeddings),
+        D_MODEL,
+    ), f"Expected: {(len(mean_embeddings), D_MODEL)}, Got: {mean_embeddings_tensor.shape}"
+    if not os.path.exists(f"{CACHE_PATH}/all_genomes_embeddings.pt"):
+        torch.save(
             mean_embeddings_tensor, f"{CACHE_PATH}/all_genomes_embeddings.pt"
         )
 
@@ -228,6 +312,7 @@ df[phylo_cols] = df["phylotag"].apply(split_phylotag)
 df.head()
 
 # %%
+import plotly.express as px
 def plot_3d_embedding(embedding_3d: torch.Tensor, title: str, labels: list[str]) -> go.Figure:
     """Plot 3D UMAP embedding using Plotly, coloring by categorical label."""
     assert embedding_3d.shape[1] == 3, "Embedding must be 3D"
@@ -282,7 +367,7 @@ for category in ["class", "order", "family"]:
     category_df = df.loc[:, ["record", category]]
     mask = category_df[category].notna() & (category_df[category] != "NONE")
     value_counts = category_df[mask][category].value_counts()
-    valid_values = value_counts[value_counts > 10].index
+    valid_values = value_counts[value_counts > 20].index
     mask &= category_df[category].isin(valid_values)
     indices = category_df[mask].index.tolist()
     filtered_df = category_df.loc[indices].reset_index(drop=True)
@@ -294,9 +379,4 @@ for category in ["class", "order", "family"]:
     )
     fig.show()
 
-# %%
-# Build the KNN adjacency graph and compute geodesics
-adjacency_matrix = build_knn_graph(mean_embeddings_tensor, k=27, distance='cosine', weighted=False)
-geo_distance_matrix = geodesic_distance_matrix(adjacency_matrix)
-cosine_distance_matrix = pairwise_cosine_similarity(mean_embeddings_tensor)
 # %%

@@ -1,0 +1,238 @@
+# %%
+import gc
+import json
+import os
+import sys
+import random
+from itertools import batched, product
+from pprint import pprint
+from time import perf_counter
+from typing import Literal
+sys.path.append("..")  # For imports from parent dir
+from utils.distances import build_knn_graph, geodesic_distance_matrix, pairwise_cosine_similarity
+from utils.data import load_data_from_hf, load_phylotags, preprocess, filter_by_phylotags
+from utils.sampling import sample_genome
+from utils.inference import get_mean_embeddings, batch_tokenize
+
+import plotly.express as px
+import plotly.graph_objects as go
+import torch
+import umap
+import datasets
+from evo2 import Evo2
+# from id2taxonomy import get_taxonomy_from_accession
+from tqdm import tqdm
+import pandas as pd
+import hashlib
+
+random.seed(42)
+# Enable optimizations
+torch.backends.cudnn.benchmark = True  # Optimize for consistent input sizes
+if hasattr(torch.backends.cuda, "matmul"):
+    torch.backends.cuda.matmul.allow_tf32 = (
+        True  # Use TF32 for faster matmul on A100/H100
+    )
+
+assert os.getcwd().endswith("evo2-mech-interp/notebooks"), "Run from notebooks/ directory"
+
+
+NUM_SPECIES = 1024  # Number of species to sample (for demo; set higher for real use)
+NUM_SAMPLES = 10  # Number of samples per genome
+COVERAGE_FRACTION = 0.05  # Fraction of genome to cover with samples
+REGION_LENGTH = 4000  # Length of each genomic region to sample (bp)
+AVERAGE_OVER_LAST_BP = (
+    2000  # Only average activations over the last N bp of each region
+)
+D_MODEL_7B = 4096
+D_MODEL_1B = 1920
+MODEL: Literal["1b", "7b"] = "7b" 
+D_MODEL = D_MODEL_1B if MODEL == "1b" else D_MODEL_7B if MODEL == "7b" else None
+BATCH_SIZE = 48 if MODEL == "1b" else 8  # Start here and increase if possible
+RANDOM_SEED = 42
+LAYER_NAME = "blocks.24.mlp.l3"
+
+SAMPLING_CONFIG = {
+    "num_samples": None,
+    "coverage_fraction": COVERAGE_FRACTION,
+}
+SAMPLING_STR = f"num_samples_{NUM_SAMPLES}" if SAMPLING_CONFIG["num_samples"] is not None else f"coverage_frac_{COVERAGE_FRACTION}"
+CACHE_PATH = f"data/embeddings/model_{MODEL}/{SAMPLING_STR}/layer_{LAYER_NAME}/"
+
+os.makedirs("data/embeddings", exist_ok=True)
+os.makedirs(CACHE_PATH, exist_ok=True)
+
+
+# %%
+data_files = [
+    "https://huggingface.co/datasets/arcinstitute/opengenome2/resolve/main/json/pretraining_or_both_phases/gtdb_v220_imgpr/data_gtdb_train_chunk1.jsonl.gz"
+]
+
+phylotags = load_phylotags("/root/evo2-mech-interp/notebooks/phylotags_1024.json")
+df = load_data_from_hf(data_files)
+
+# %% - Get items with longest sequences
+# TODO: consider how sampling might be biased by dataset
+
+df = preprocess(df, min_length=5000, subset=10000, random_seed=RANDOM_SEED)
+df = filter_by_phylotags(df, phylotags)
+df = df.reset_index(drop=True)
+df.to_csv(f"{CACHE_PATH}/genomes_metadata.csv", index=False)
+df.head()
+# %%
+# Sample and save to new df where each row is a sampled region, referencing original genome
+samples = {
+    "genome_idx": [],
+    "sample": [],
+}
+for row in df.itertuples():
+    sampled_regions = sample_genome(
+        row.sequence, 
+        sample_region_length=REGION_LENGTH, 
+        **SAMPLING_CONFIG
+    )
+    samples["genome_idx"].extend([row.Index] * len(sampled_regions))
+    samples["sample"].extend(sampled_regions)
+    if len(samples) >= NUM_SPECIES:
+        break
+
+samples_df = pd.DataFrame(samples)
+samples_df.to_csv(f"{CACHE_PATH}/sampled_regions.csv", index=False)
+samples_df.head()
+
+# %% - Load model
+evo2_model = Evo2("evo2_1b_base") if MODEL == "1b" else Evo2("evo2_7b")
+print(f"Loaded Evo2 model with {sum(p.numel() for p in evo2_model.model.parameters() if p.requires_grad):,} parameters")
+
+# %%
+torch.cuda.empty_cache()
+gc.collect()
+
+# inputs_by_species = []
+
+print("Pre-tokenizing all sequences...")
+# Pre-tokenize all sequences to avoid repeated tokenization
+tokenized_samples = []
+for genome_idx, genome_df in tqdm(samples_df.groupby("genome_idx"), desc="Tokenizing"):
+    tokenized_samples.append(
+        batch_tokenize(
+            genome_df["sample"].tolist(), 
+            evo2_model,
+            BATCH_SIZE
+        )
+    )
+
+print("Calculating mean embeddings for all genomes...")
+mean_embeddings_tensor = get_mean_embeddings(
+    df,
+    tokenized_samples,
+    evo2_model,
+    BATCH_SIZE,
+    CACHE_PATH,
+    D_MODEL,
+    REGION_LENGTH,
+    LAYER_NAME,
+    AVERAGE_OVER_LAST_BP,
+)
+
+
+# %%
+def umap_fit_transform(embeddings: torch.Tensor) -> torch.Tensor:
+    """Fit UMAP on embeddings and return 3D reduced embeddings."""
+    reducer = umap.UMAP(n_components=3, random_state=42)
+    umap_embeddings = reducer.fit_transform(
+        embeddings.to(torch.float32).cpu().numpy()
+    )
+    return torch.tensor(umap_embeddings, dtype=torch.float32)
+
+embedding_3d = umap_fit_transform(mean_embeddings_tensor)
+
+# %%
+
+phylotags_df = pd.DataFrame.from_dict(phylotags, orient="index", columns=["phylotag"]).reset_index().rename(columns={"index": "record"})
+df = pd.merge(df, phylotags_df, on="record", how="left")
+df = df.dropna(subset=["phylotag"]).reset_index(drop=True)
+
+phylo_cols = ["domain", "phylum", "class", "order", "family", "genus", "species"]
+def split_phylotag(tag):
+    parts = tag.split(";")
+    values = [p.split("__", 1)[1] if "__" in p else None for p in parts]
+    # Pad missing values if tag is incomplete
+    values += [None] * (len(phylo_cols) - len(values))
+    return pd.Series(values, index=phylo_cols)
+
+df[phylo_cols] = df["phylotag"].apply(split_phylotag)
+df.head()
+
+# %%
+def plot_3d_embedding(embedding_3d: torch.Tensor, title: str, labels: list[str]) -> go.Figure:
+    """Plot 3D UMAP embedding using Plotly, coloring by categorical label."""
+    assert embedding_3d.shape[1] == 3, "Embedding must be 3D"
+    assert len(labels) == embedding_3d.shape[0], "Labels length must match number of points"
+
+    # Map labels to integers for coloring
+    unique_labels = sorted(set(labels))
+    color_map = {label: color for label, color in zip(unique_labels, px.colors.qualitative.Light24)}
+    colors = [color_map[label] for label in labels]
+
+    fig = go.Figure(
+        data=[
+            go.Scatter3d(
+                x=embedding_3d[:, 0],
+                y=embedding_3d[:, 1],
+                z=embedding_3d[:, 2],
+                mode="markers",
+                marker=dict(
+                    size=4,
+                    opacity=0.7,
+                    color=colors,
+                ),
+                text=[f"Genome {i}<br>Label: {labels[i]}" for i in range(len(embedding_3d))],
+                hovertemplate="<b>%{text}</b><br>UMAP 1: %{x}<br>UMAP 2: %{y}<br>UMAP 3: %{z}<extra></extra>",
+                showlegend=True,
+            )
+        ]
+    )
+
+    # Add legend entries for each label
+    for label, color in color_map.items():
+        fig.add_trace(
+            go.Scatter3d(
+                x=[None], y=[None], z=[None],
+                mode="markers",
+                marker=dict(size=8, color=color),
+                name=label,
+                showlegend=True,
+            )
+        )
+
+    fig.update_layout(
+        title=title,
+        scene=dict(xaxis_title="UMAP 1", yaxis_title="UMAP 2", zaxis_title="UMAP 3"),
+        width=800,
+        height=600,
+        legend=dict(itemsizing="constant"),
+    )
+    return fig
+
+for category in ["class", "order", "family"]:
+    category_df = df.loc[:, ["record", category]]
+    mask = category_df[category].notna() & (category_df[category] != "NONE")
+    value_counts = category_df[mask][category].value_counts()
+    valid_values = value_counts[value_counts > 10].index
+    mask &= category_df[category].isin(valid_values)
+    indices = category_df[mask].index.tolist()
+    filtered_df = category_df.loc[indices].reset_index(drop=True)
+    filtered_embedding = embedding_3d[indices]
+    fig = plot_3d_embedding(
+        filtered_embedding, 
+        title=f"3D UMAP Colored by {category.capitalize()}",
+        labels=filtered_df[category].tolist()
+    )
+    fig.show()
+
+# %%
+# Build the KNN adjacency graph and compute geodesics
+adjacency_matrix = build_knn_graph(mean_embeddings_tensor, k=27, distance='cosine', weighted=False)
+geo_distance_matrix = geodesic_distance_matrix(adjacency_matrix)
+cosine_distance_matrix = pairwise_cosine_similarity(mean_embeddings_tensor)
+# %%

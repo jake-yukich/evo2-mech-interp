@@ -394,7 +394,7 @@ def organisms_to_gtdb(records: list[str], metadata: pd.DataFrame) -> dict:
 
     return mappings
 
-def get_gtdb_tree(mappings: dict, tree_file: str = "data/gtdb/bac120_r220.tree") -> np.ndarray, list[str]:
+def get_gtdb_tree(mappings: dict, tree_file: str = "data/gtdb/bac120_r220.tree") -> tuple[np.ndarray, list[str]]:
     """
     Returns a tuple of (distance_matrix, mapped_records), where:
         distance_matrix: (n, n) array of phylogenetic distances between GTDB accessions
@@ -432,7 +432,6 @@ def gtdb_pipeline(records: list[str]) -> dict:
     metadata = pd.read_csv("data/gtdb/bac120_metadata_r220.tsv.gz", sep="\t")
     mappings = organisms_to_gtdb(records, metadata)
 
-    # report mapping success rate
     success_rate = sum(1 for mapping in mappings.values() if mapping["gtdb_accession"] is not None) / len(mappings)
     print(f"Mapping success rate: {success_rate:.2f}")
 
@@ -447,6 +446,6 @@ def gtdb_pipeline(records: list[str]) -> dict:
 
 
 # %% - TEST GTDB PIPELINE
-out = gtdb_pipeline(records[:10])
-pprint(out)
+# out = gtdb_pipeline(records)
+# pprint(out)
 # %%
