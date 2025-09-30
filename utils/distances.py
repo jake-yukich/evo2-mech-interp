@@ -56,7 +56,7 @@ def build_knn_graph(points: Float[Tensor, "n d"], k: int, distance: str = 'eucli
     
     return adjacency_matrix
 
-def find_geodesic(adjacency_matrix: csr_matrix, start: int, end: int) -> tuple[float, list[int]]:
+def geodesic_distance(adjacency_matrix: csr_matrix, start: int, end: int) -> tuple[float, list[int]]:
     """
     Find shortest path between two nodes (indices start and end) using Dijkstra's algorithm.
     
@@ -98,6 +98,19 @@ def geodesic_distance_matrix(adjacency_matrix: csr_matrix) -> np.ndarray:
     distance_matrix = dijkstra(adjacency_matrix, return_predecessors=False)
     return distance_matrix
 
+def pairwise_cosine_similarity(X: Float[Tensor, "n d"]) -> Float[Tensor, "n n"]:
+    """
+    Compute pairwise cosine similarity between all vectors.
+    
+    Args:
+        X: tensor of shape (n, d)
+    
+    Returns:
+        similarity matrix of shape (n, n)
+    """
+    X_norm = X / X.norm(dim=1, keepdim=True)
+    return X_norm @ X_norm.T
+
 if __name__ == "__main__":
 
     # Example: noisy sphere
@@ -129,7 +142,7 @@ if __name__ == "__main__":
     start_idx = 0
     end_idx = torch.argmin(torch.sum(points * points[start_idx], dim=1)).item()
 
-    dist_euc, path_euc = find_geodesic(graph_euclidean, start_idx, end_idx)
+    dist_euc, path_euc = geodesic_distance(graph_euclidean, start_idx, end_idx)
 
     print(f"Euclidean geodesic distance: {dist_euc:.3f}")
     print(f"Path length: {len(path_euc)} points")

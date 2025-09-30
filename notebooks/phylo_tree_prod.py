@@ -2,11 +2,15 @@
 import gc
 import json
 import os
+import sys
 import random
 from itertools import batched, product
 from pprint import pprint
 from time import perf_counter
+sys.path.append("..")  # For imports from parent dir
+from utils.distances import build_knn_graph, geodesic_distance, geodesic_distance_matrix, pairwise_cosine_similarity
 
+import plotly.express as px
 import plotly.graph_objects as go
 import torch
 import umap
@@ -24,6 +28,8 @@ if hasattr(torch.backends.cuda, "matmul"):
     torch.backends.cuda.matmul.allow_tf32 = (
         True  # Use TF32 for faster matmul on A100/H100
     )
+
+assert os.getcwd().endswith("evo2-mech-interp/notebooks"), "Run from repo root"
 
 
 NUM_SPECIES = 1024  # Number of species to sample (for demo; set higher for real use)
@@ -250,36 +256,40 @@ def batch_inference(
 
 print("Processing embeddings...")
 with torch.no_grad():
-    mean_embeddings = []
-    for genome_idx, tokenized_samples_from_genome in enumerate(
-        tqdm(tokenized_samples, desc="Processing genomes")
-    ):
-        sample_embeddings = batch_inference(
-            tokenized_samples_from_genome, evo2_model, BATCH_SIZE
-        )
-        genome_hash = hashlib.sha256(df.at[genome_idx, "sequence"].encode()).hexdigest()
+    if os.path.exists(f"{CACHE_PATH}/all_genomes_embeddings.pt"):
+        print("Loading all genomes embeddings from cache...")
+        mean_embeddings_tensor = torch.load(f"{CACHE_PATH}/all_genomes_embeddings.pt")
+        assert mean_embeddings_tensor.shape[1] == D_MODEL, f"Expected: {D_MODEL}, Got: {mean_embeddings_tensor.shape[1]}"
+    else:
+        mean_embeddings = []
+        for genome_idx, tokenized_samples_from_genome in enumerate(
+            tqdm(tokenized_samples, desc="Processing genomes")
+        ):
+            sample_embeddings = batch_inference(
+                tokenized_samples_from_genome, evo2_model, BATCH_SIZE
+            )
+            genome_hash = hashlib.sha256(df.at[genome_idx, "sequence"].encode()).hexdigest()
 
-        if os.path.exists(f"{CACHE_PATH}/genome_{genome_idx}_hash_{genome_hash}.pt"):
-            print(f"Skipping genome {genome_idx}, already processed.")
-            continue
-        
-        genome_embedding = sample_embeddings[:, -AVERAGE_OVER_LAST_BP:, :].mean(
-            dim=(0, 1)
-        )
-        assert genome_embedding.shape == (D_MODEL,)
-        
-        torch.save(
-            genome_embedding, f"{CACHE_PATH}/{genome_hash}.pt"
-        )
-        
-        mean_embeddings.append(genome_embedding)
-    mean_embeddings_tensor = torch.stack(mean_embeddings, dim=0)
-    assert mean_embeddings_tensor.shape == (
-        len(mean_embeddings),
-        D_MODEL,
-    ), f"Expected: {(len(mean_embeddings), D_MODEL)}, Got: {mean_embeddings_tensor.shape}"
-    if not os.path.exists(f"{CACHE_PATH}/all_genomes_embeddings.pt"):
-        torch.save(
+            if os.path.exists(f"{CACHE_PATH}/genome_{genome_idx}_hash_{genome_hash}.pt"):
+                print(f"Skipping genome {genome_idx}, already processed.")
+                continue
+            
+            genome_embedding = sample_embeddings[:, -AVERAGE_OVER_LAST_BP:, :].mean(
+                dim=(0, 1)
+            )
+            assert genome_embedding.shape == (D_MODEL,)
+            
+            torch.save(
+                genome_embedding, f"{CACHE_PATH}/{genome_hash}.pt"
+            )
+            
+            mean_embeddings.append(genome_embedding)
+        mean_embeddings_tensor = torch.stack(mean_embeddings, dim=0)
+        assert mean_embeddings_tensor.shape == (
+            len(mean_embeddings),
+            D_MODEL,
+        ), f"Expected: {(len(mean_embeddings), D_MODEL)}, Got: {mean_embeddings_tensor.shape}"
+        torch.save( 
             mean_embeddings_tensor, f"{CACHE_PATH}/all_genomes_embeddings.pt"
         )
 
@@ -312,7 +322,6 @@ df[phylo_cols] = df["phylotag"].apply(split_phylotag)
 df.head()
 
 # %%
-import plotly.express as px
 def plot_3d_embedding(embedding_3d: torch.Tensor, title: str, labels: list[str]) -> go.Figure:
     """Plot 3D UMAP embedding using Plotly, coloring by categorical label."""
     assert embedding_3d.shape[1] == 3, "Embedding must be 3D"
@@ -367,7 +376,7 @@ for category in ["class", "order", "family"]:
     category_df = df.loc[:, ["record", category]]
     mask = category_df[category].notna() & (category_df[category] != "NONE")
     value_counts = category_df[mask][category].value_counts()
-    valid_values = value_counts[value_counts > 20].index
+    valid_values = value_counts[value_counts > 10].index
     mask &= category_df[category].isin(valid_values)
     indices = category_df[mask].index.tolist()
     filtered_df = category_df.loc[indices].reset_index(drop=True)
@@ -379,4 +388,9 @@ for category in ["class", "order", "family"]:
     )
     fig.show()
 
+# %%
+# Build the KNN adjacency graph and compute geodesics
+adjacency_matrix = build_knn_graph(mean_embeddings_tensor, k=27, distance='cosine', weighted=False)
+geo_distance_matrix = geodesic_distance_matrix(adjacency_matrix)
+cosine_distance_matrix = pairwise_cosine_similarity(mean_embeddings_tensor)
 # %%
