@@ -3,26 +3,21 @@
 %autoreload 2
 # %%
 import gc
-import json
 import os
 import sys
 import random
 from typing import Literal
 sys.path.append("..")  # For imports from parent dir
 from utils.distances import build_knn_graph, geodesic_distance_matrix, cosine_similarity_matrix, mp_phylogenetic_distance_matrix
-from utils.data import load_data_from_hf, remove_tags
+from utils.data import load_data_from_hf, remove_tags, preprocess_gtdb_sequences, add_gtdb_accession
 from utils.phylogenetics import get_tag_to_gtdb_accession_map
 from utils.sampling import sample_genome
 from utils.inference import get_mean_embeddings, batch_tokenize
+from utils.visualization import umap_reduce_3d, plot_umap_3d, plot_distance_scatter
 
-import plotly.express as px
-import plotly.graph_objects as go
 import numpy as np
 import torch
-import umap
-import datasets
 from evo2 import Evo2
-# from id2taxonomy import get_taxonomy_from_accession
 from tqdm import tqdm
 import pandas as pd
 
@@ -51,6 +46,7 @@ D_MODEL = D_MODEL_1B if MODEL == "1b" else D_MODEL_7B if MODEL == "7b" else None
 BATCH_SIZE = 48 if MODEL == "1b" else 8  # Start here and increase if possible
 RANDOM_SEED = 42
 LAYER_NAME = "blocks.24.mlp.l3"
+REMOVE_TAGS = True
 
 SAMPLING_CONFIG = {
     "num_samples": 5,
@@ -76,29 +72,8 @@ df = load_data_from_hf(data_files)
 # %% - Get items with longest sequences
 # TODO: consider how sampling might be biased by taking top n sorted sequences
 
-def preprocess(df: pd.DataFrame, min_length: int, subset: int) -> pd.DataFrame:
-    """Filter sequences by minimum length, shuffle, and return a subset."""
-    print("Preprocessing data...")
-    df["sequence_length"] = df["text"].apply(len)
-    filtered_df = df[df["sequence_length"] > min_length]
-    shuffled_df = filtered_df.sample(frac=1, random_state=RANDOM_SEED).reset_index(drop=True)
-    shuffled_df = shuffled_df.rename(columns={"text": "sequence"})
-    sequences_with_tags_removed, tags = remove_tags(shuffled_df["sequence"])
-    shuffled_df["sequence"] = sequences_with_tags_removed
-    shuffled_df["tags"] = tags
-    shuffled_df["class"] = shuffled_df["tags"].str.split(";").str[2]
-    shuffled_df["order"] = shuffled_df["tags"].str.split(";").str[3]
-    shuffled_df["family"] = shuffled_df["tags"].str.split(";").str[4]
-    return shuffled_df.head(subset)
-
-def add_gtdb_accession(df: pd.DataFrame) -> pd.DataFrame:
-    """Add Gtdb accession IDs to the dataframe."""
-    print("Adding Gtdb accession IDs...")
-    df["gtdb_accession"] = df["tags"].map(get_tag_to_gtdb_accession_map())
-    return df
-
-df = preprocess(df, NUM_SAMPLES * REGION_LENGTH, subset=NUM_SPECIES)
-df = add_gtdb_accession(df)
+df = preprocess_gtdb_sequences(df, NUM_SAMPLES * REGION_LENGTH, subset=NUM_SPECIES, random_seed=RANDOM_SEED)
+df = add_gtdb_accession(df, get_tag_to_gtdb_accession_map())
 df = df.dropna(subset=["gtdb_accession"]).reset_index(drop=True)
 df.to_csv(f"{CACHE_PATH}/genomes_metadata.csv", index=False)
 df.head()
@@ -131,8 +106,6 @@ print(f"Loaded Evo2 model with {sum(p.numel() for p in evo2_model.model.paramete
 torch.cuda.empty_cache()
 gc.collect()
 
-# inputs_by_species = []
-
 print("Pre-tokenizing all sequences...")
 # Pre-tokenize all sequences to avoid repeated tokenization
 tokenized_samples = []
@@ -160,85 +133,10 @@ mean_embeddings = get_mean_embeddings(
 
 
 # %%
-def umap_fit_transform(embeddings: torch.Tensor) -> torch.Tensor:
-    """Fit UMAP on embeddings and return 3D reduced embeddings."""
-    reducer = umap.UMAP(n_components=3, random_state=42)
-    umap_embeddings = reducer.fit_transform(
-        embeddings.to(torch.float32).cpu().numpy()
-    )
-    return torch.tensor(umap_embeddings, dtype=torch.float32)
-
-embedding_3d = umap_fit_transform(mean_embeddings)
+embedding_3d = umap_reduce_3d(mean_embeddings, random_state=42)
 
 # %%
-def plot_3d_embedding(embedding_3d: torch.Tensor, title: str, labels: list[str]) -> go.Figure:
-    """Plot 3D UMAP embedding using Plotly, coloring by categorical label."""
-    # Ensure data is NumPy for Plotly rendering
-    coords = (
-        embedding_3d.detach().cpu().numpy()
-        if isinstance(embedding_3d, torch.Tensor)
-        else np.asarray(embedding_3d)
-    )
-    assert coords.shape[1] == 3, "Embedding must be 3D"
-    assert len(labels) == coords.shape[0], "Labels length must match number of points"
-
-    # Map labels to colors (cycle palette if needed)
-    unique_labels = sorted(set(labels))
-    palette = px.colors.qualitative.Light24
-    if len(unique_labels) > len(palette):
-        repeats = (len(unique_labels) // len(palette)) + 1
-        palette = (palette * repeats)[: len(unique_labels)]
-    color_map = {label: color for label, color in zip(unique_labels, palette)}
-    colors = [color_map[label] for label in labels]
-
-    # Create main trace with points
-    fig = go.Figure(
-        data=[
-            go.Scatter3d(
-                x=coords[:, 0],
-                y=coords[:, 1],
-                z=coords[:, 2],
-                mode="markers",
-                marker=dict(
-                    size=4,
-                    opacity=0.7,
-                    color=colors,
-                ),
-                text=[f"Genome {i}<br>Label: {labels[i]}" for i in range(coords.shape[0])],
-                hovertemplate="<b>%{text}</b><br>UMAP 1: %{x}<br>UMAP 2: %{y}<br>UMAP 3: %{z}<extra></extra>",
-                showlegend=False,
-            )
-        ]
-    )
-
-    # Add legend-only entries for categories
-    for label, color in color_map.items():
-        fig.add_trace(
-            go.Scatter3d(
-                x=[None],
-                y=[None],
-                z=[None],
-                mode="markers",
-                marker=dict(
-                    size=4,
-                    opacity=0.7,
-                    color=color,
-                ),
-                name=label,
-                showlegend=True,
-                visible="legendonly",
-            )
-        )
-
-    fig.update_layout(
-        title=title,
-        scene=dict(xaxis_title="UMAP 1", yaxis_title="UMAP 2", zaxis_title="UMAP 3"),
-        width=800,
-        height=600,
-        legend=dict(itemsizing="constant"),
-    )
-    return fig
-
+# %%
 for category in ["class", "order", "family"]:
     # Render ALL points; map rare categories to "Other" for readability
     # Ensure labels length matches embedding_3d rows
@@ -262,7 +160,7 @@ for category in ["class", "order", "family"]:
     else:
         labels_for_plot = labels_list
 
-    fig = plot_3d_embedding(
+    fig = plot_umap_3d(
         embedding_3d,
         title=f"3D UMAP Colored by {category.capitalize()}",
         labels=labels_for_plot,
@@ -283,35 +181,25 @@ geo_distance_matrix = geodesic_distance_matrix(adjacency_matrix)
 cos_similarity_matrix = cosine_similarity_matrix(mean_embeddings)
 
 # %%
-def plot_distance_correlation(x, y, x_label, y_label, title):
-    fig = px.scatter(
-        x=x,
-        y=y,
-        labels={"x": x_label, "y": y_label},
-        title=title,
-        trendline_color_override="red"
-    )
-    fig.update_traces(marker=dict(size=5, opacity=0.3))
-    fig.show()
-
 # Use lower triangular indices, excluding diagonal
 n = cos_similarity_matrix.shape[0]
 tril_indices = np.tril_indices(n, k=-1)
 
-plot_distance_correlation(
+fig = plot_distance_scatter(
     x=phylo_distance_matrix[tril_indices].to(torch.float32).cpu().numpy(),
     y=cos_similarity_matrix[tril_indices].to(torch.float32).cpu().numpy(),
-    # labels=df["order"].tolist()[:subset],
     x_label="Phylogenetic Distance",
-    y_label="Cosine Distance",
-    title="Cosine Distance vs Phylogenetic Distance"
+    y_label="Cosine Similarity",
+    title="Cosine Similarity vs Phylogenetic Distance"
 )
-plot_distance_correlation(
+fig.show()
+
+fig = plot_distance_scatter(
     x=phylo_distance_matrix[tril_indices].to(torch.float32).cpu().numpy(),
     y=geo_distance_matrix[tril_indices],
-    # labels=df["order"].tolist()[:subset],
     x_label="Phylogenetic Distance",
     y_label="Geodesic Distance",
     title="Geodesic Distance vs Phylogenetic Distance"
 )
+fig.show()
 # %%
