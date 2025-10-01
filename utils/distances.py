@@ -1,4 +1,3 @@
-# %%
 import torch
 import numpy as np
 import plotly.graph_objects as go
@@ -7,6 +6,7 @@ from scipy.sparse.csgraph import dijkstra
 from jaxtyping import Float
 from torch import Tensor
 from ete3 import Tree
+from multiprocessing import Pool
 
 def build_knn_graph(points: Float[Tensor, "n d"], k: int, distance: str = 'euclidean', weighted: bool = True) -> csr_matrix:
     """
@@ -30,7 +30,7 @@ def build_knn_graph(points: Float[Tensor, "n d"], k: int, distance: str = 'eucli
         # Cosine distance = 1 - cosine similarity
         points_norm = points / points.norm(dim=1, keepdim=True)
         cosine_sim = points_norm @ points_norm.T
-        distances = 1 - cosine_sim
+        distances = torch.arccos(cosine_sim)  # convert similarity to distance
     else:
         raise ValueError(f"Unknown distance: {distance}")
     

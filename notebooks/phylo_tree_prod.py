@@ -35,7 +35,7 @@ if hasattr(torch.backends.cuda, "matmul"):
     )
 
 
-NUM_SPECIES = 1024  # Number of species to sample (for demo; set higher for real use)
+NUM_SPECIES = 64  # Number of species to sample (for demo; set higher for real use)
 NUM_SAMPLES = 10  # Number of samples per genome
 COVERAGE_FRACTION = 0.05  # Fraction of genome to cover with samples
 REGION_LENGTH = 4000  # Length of each genomic region to sample (bp)
@@ -51,11 +51,11 @@ RANDOM_SEED = 42
 LAYER_NAME = "blocks.24.mlp.l3"
 
 SAMPLING_CONFIG = {
-    "num_samples": 5,
-    "coverage_fraction": None,
+    "num_samples": None,
+    "coverage_fraction": COVERAGE_FRACTION,
 }
 SAMPLING_STR = f"num_samples_{NUM_SAMPLES}" if SAMPLING_CONFIG["num_samples"] is not None else f"coverage_frac_{COVERAGE_FRACTION}"
-CACHE_PATH = f"data/embeddings/model_{MODEL}/{SAMPLING_STR}/layer_{LAYER_NAME}/"
+CACHE_PATH = f"data/embeddings/model_{MODEL}/{SAMPLING_STR}/layer_{LAYER_NAME}/low_species_coverage_5p/"
 
 os.makedirs("data/embeddings", exist_ok=True)
 os.makedirs(CACHE_PATH, exist_ok=True)
@@ -208,7 +208,7 @@ for row in df.itertuples():
     )
     samples["genome_idx"].extend([row.Index] * len(sampled_regions))
     samples["sample"].extend(sampled_regions)
-    if len(samples) >= NUM_SPECIES:
+    if len(set(samples["genome_idx"])) >= NUM_SPECIES:
         break
 
 samples_df = pd.DataFrame(samples)
@@ -280,39 +280,40 @@ def batch_inference(
 print("Processing embeddings...")
 if os.path.exists(f"{CACHE_PATH}/all_genomes_embeddings.pt"):
     mean_embeddings_tensor = torch.load(f"{CACHE_PATH}/all_genomes_embeddings.pt")
-with torch.no_grad():
-    mean_embeddings = []
-    for genome_idx, tokenized_samples_from_genome in enumerate(
-        tqdm(tokenized_samples, desc="Processing genomes")
-    ):
-        sample_embeddings = batch_inference(
-            tokenized_samples_from_genome, evo2_model, BATCH_SIZE
-        )
-        genome_hash = hashlib.sha256(df.at[genome_idx, "sequence"].encode()).hexdigest()
+else:
+    with torch.no_grad():
+        mean_embeddings = []
+        for genome_idx, tokenized_samples_from_genome in enumerate(
+            tqdm(tokenized_samples, desc="Processing genomes")
+        ):
+            sample_embeddings = batch_inference(
+                tokenized_samples_from_genome, evo2_model, BATCH_SIZE
+            )
+            genome_hash = hashlib.sha256(df.at[genome_idx, "sequence"].encode()).hexdigest()
 
-        if os.path.exists(f"{CACHE_PATH}/genome_{genome_idx}_hash_{genome_hash}.pt"):
-            print(f"Skipping genome {genome_idx}, already processed.")
-            continue
-        
-        genome_embedding = sample_embeddings[:, -AVERAGE_OVER_LAST_BP:, :].mean(
-            dim=(0, 1)
-        )
-        assert genome_embedding.shape == (D_MODEL,)
-        
-        torch.save(
-            genome_embedding, f"{CACHE_PATH}/{genome_hash}.pt"
-        )
-        
-        mean_embeddings.append(genome_embedding)
-    mean_embeddings_tensor = torch.stack(mean_embeddings, dim=0)
-    assert mean_embeddings_tensor.shape == (
-        len(mean_embeddings),
-        D_MODEL,
-    ), f"Expected: {(len(mean_embeddings), D_MODEL)}, Got: {mean_embeddings_tensor.shape}"
-    if not os.path.exists(f"{CACHE_PATH}/all_genomes_embeddings.pt"):
-        torch.save(
-            mean_embeddings_tensor, f"{CACHE_PATH}/all_genomes_embeddings.pt"
-        )
+            if os.path.exists(f"{CACHE_PATH}/genome_{genome_idx}_hash_{genome_hash}.pt"):
+                print(f"Skipping genome {genome_idx}, already processed.")
+                continue
+            
+            genome_embedding = sample_embeddings[:, -AVERAGE_OVER_LAST_BP:, :].mean(
+                dim=(0, 1)
+            )
+            assert genome_embedding.shape == (D_MODEL,)
+            
+            torch.save(
+                genome_embedding, f"{CACHE_PATH}/{genome_hash}.pt"
+            )
+            
+            mean_embeddings.append(genome_embedding)
+        mean_embeddings_tensor = torch.stack(mean_embeddings, dim=0)
+        assert mean_embeddings_tensor.shape == (
+            len(mean_embeddings),
+            D_MODEL,
+        ), f"Expected: {(len(mean_embeddings), D_MODEL)}, Got: {mean_embeddings_tensor.shape}"
+        if not os.path.exists(f"{CACHE_PATH}/all_genomes_embeddings.pt"):
+            torch.save(
+                mean_embeddings_tensor, f"{CACHE_PATH}/all_genomes_embeddings.pt"
+            )
 
 # %%
 def umap_fit_transform(embeddings: torch.Tensor) -> torch.Tensor:
@@ -330,42 +331,60 @@ embedding_3d = umap_fit_transform(mean_embeddings_tensor)
 import plotly.express as px
 def plot_3d_embedding(embedding_3d: torch.Tensor, title: str, labels: list[str]) -> go.Figure:
     """Plot 3D UMAP embedding using Plotly, coloring by categorical label."""
-    assert embedding_3d.shape[1] == 3, "Embedding must be 3D"
-    assert len(labels) == embedding_3d.shape[0], "Labels length must match number of points"
+    # Ensure data is NumPy for Plotly rendering
+    coords = (
+        embedding_3d.detach().cpu().numpy()
+        if isinstance(embedding_3d, torch.Tensor)
+        else np.asarray(embedding_3d)
+    )
+    assert coords.shape[1] == 3, "Embedding must be 3D"
+    assert len(labels) == coords.shape[0], "Labels length must match number of points"
 
-    # Map labels to integers for coloring
+    # Map labels to colors (cycle palette if needed)
     unique_labels = sorted(set(labels))
-    color_map = {label: color for label, color in zip(unique_labels, px.colors.qualitative.Light24)}
+    palette = px.colors.qualitative.Light24
+    if len(unique_labels) > len(palette):
+        repeats = (len(unique_labels) // len(palette)) + 1
+        palette = (palette * repeats)[: len(unique_labels)]
+    color_map = {label: color for label, color in zip(unique_labels, palette)}
     colors = [color_map[label] for label in labels]
 
+    # Create main trace with points
     fig = go.Figure(
         data=[
             go.Scatter3d(
-                x=embedding_3d[:, 0],
-                y=embedding_3d[:, 1],
-                z=embedding_3d[:, 2],
+                x=coords[:, 0],
+                y=coords[:, 1],
+                z=coords[:, 2],
                 mode="markers",
                 marker=dict(
                     size=4,
                     opacity=0.7,
                     color=colors,
                 ),
-                text=[f"Genome {i}<br>Label: {labels[i]}" for i in range(len(embedding_3d))],
+                text=[f"Genome {i}<br>Label: {labels[i]}" for i in range(coords.shape[0])],
                 hovertemplate="<b>%{text}</b><br>UMAP 1: %{x}<br>UMAP 2: %{y}<br>UMAP 3: %{z}<extra></extra>",
-                showlegend=True,
+                showlegend=False,
             )
         ]
     )
 
-    # Add legend entries for each label
+    # Add legend-only entries for categories
     for label, color in color_map.items():
         fig.add_trace(
             go.Scatter3d(
-                x=[None], y=[None], z=[None],
+                x=[None],
+                y=[None],
+                z=[None],
                 mode="markers",
-                marker=dict(size=8, color=color),
+                marker=dict(
+                    size=4,
+                    opacity=0.7,
+                    color=color,
+                ),
                 name=label,
                 showlegend=True,
+                visible="legendonly",
             )
         )
 
@@ -379,30 +398,101 @@ def plot_3d_embedding(embedding_3d: torch.Tensor, title: str, labels: list[str])
     return fig
 
 for category in ["class", "order", "family"]:
-    category_df = df.loc[:, ["sequence", category]]
-    mask = category_df[category].notna() & (category_df[category] != "NONE")
-    value_counts = category_df[mask][category].value_counts()
-    valid_values = value_counts[value_counts > 20].index
-    mask &= category_df[category].isin(valid_values)
-    indices = category_df[mask].index.tolist()
-    filtered_df = category_df.loc[indices].reset_index(drop=True)
-    filtered_embedding = embedding_3d[indices]
+    # Render ALL points; map rare categories to "Other" for readability
+    # Ensure labels length matches embedding_3d rows
+    labels_series = (
+        df[category]
+        .fillna("Unknown")
+        .replace("NONE", "Unknown")
+    )
+    value_counts = labels_series.value_counts()
+    min_count = max(2, int(0.05 * len(labels_series)))  # at least 2, or 5%
+    frequent = set(value_counts[value_counts >= min_count].index)
+    if len(frequent) == 0 and len(value_counts) > 0:
+        frequent = set(value_counts.head(min(10, len(value_counts))).index)
+    # Truncate or pad labels_for_plot to match embedding_3d rows
+    n_points = embedding_3d.shape[0]
+    labels_list = [lbl if lbl in frequent else "Other" for lbl in labels_series.tolist()]
+    if len(labels_list) > n_points:
+        labels_for_plot = labels_list[:n_points]
+    elif len(labels_list) < n_points:
+        labels_for_plot = labels_list + ["Other"] * (n_points - len(labels_list))
+    else:
+        labels_for_plot = labels_list
+
     fig = plot_3d_embedding(
-        filtered_embedding, 
+        embedding_3d,
         title=f"3D UMAP Colored by {category.capitalize()}",
-        labels=filtered_df[category].tolist()
+        labels=labels_for_plot,
     )
     fig.show()
+    # fig.write_html(f"{CACHE_PATH}/3d_embedding_{category}.html")
 
 # %%
-# Build the KNN adjacency graph and compute geodesics
-adjacency_matrix = build_knn_graph(mean_embeddings_tensor, k=27, distance='cosine', weighted=False)
-geo_distance_matrix = geodesic_distance_matrix(adjacency_matrix)
-cosine_similarity_matrix = cosine_similarity_matrix(mean_embeddings_tensor)
-# %%
-# Calculate phylogenetic distance matrix
-phylo_distance_matrix = mp_phylogenetic_distance_matrix(df["gtdb_accession"].tolist(), get_tree())
+from multiprocessing import Pool
+from ete3 import Tree
+def _compute_distance_chunk(args):
+    """Worker function to compute distances for a chunk of row indices."""
+    row_indices, accession_ids, tree_path = args
+    
+    # Each worker loads its own tree
+    tree = Tree(tree_path, format=1, quoted_node_names=True)
+    leaves = set(tree.get_leaf_names())
+    
+    results = []
+    for i in row_indices:
+        for j in range(i + 1, len(accession_ids)):
+            if accession_ids[i] in leaves and accession_ids[j] in leaves:
+                dist = tree.get_distance(accession_ids[i], accession_ids[j])
+            else:
+                dist = float('nan')
+            results.append((i, j, dist))
+    
+    return results
+
+def mp_phylogenetic_distance_matrix(accession_ids: list[str], tree_path: str, n_processes: int = 12) -> torch.Tensor:
+    """
+    Compute pairwise phylogenetic distances using multiprocessing.
+    
+    Args:
+        accession_ids: List of accession IDs
+        tree_path: Path to the phylogenetic tree file
+        n_processes: Number of worker processes
+    """
+    n = len(accession_ids)
+    distance_matrix = torch.zeros((n, n), dtype=torch.float32)
+    
+    # Divide rows among workers
+    chunk_size = n // n_processes
+    chunks = []
+    for proc in range(n_processes):
+        start = proc * chunk_size
+        end = n if proc == n_processes - 1 else (proc + 1) * chunk_size
+        row_indices = list(range(start, end))
+        chunks.append((row_indices, accession_ids, tree_path))
+    
+    # Process in parallel
+    with Pool(processes=n_processes) as pool:
+        results = list(tqdm(pool.imap(_compute_distance_chunk, chunks), total=len(chunks)))
+    
+    # Fill the matrix
+    for chunk_results in results:
+        for i, j, dist in chunk_results:
+            distance_matrix[i, j] = dist
+            distance_matrix[j, i] = dist
+    
+    return distance_matrix
+
+# subset = 200
+phylo_distance_matrix = mp_phylogenetic_distance_matrix(df["gtdb_accession"].tolist(), "/root/evo2-mech-interp/data/gtdb/bac120_r220.tree")
 torch.save(phylo_distance_matrix, f"{CACHE_PATH}/phylogenetic_distance_matrix.pt")
+
+# %%
+
+# Build the KNN adjacency graph and compute geodesics
+adjacency_matrix = build_knn_graph(mean_embeddings_tensor, k=27, distance='cosine', weighted=True)
+geo_distance_matrix = geodesic_distance_matrix(adjacency_matrix)
+cos_similarity_matrix = cosine_similarity_matrix(mean_embeddings_tensor)
 
 # %%
 def plot_distance_correlation(x, y, x_label, y_label, title):
@@ -411,27 +501,29 @@ def plot_distance_correlation(x, y, x_label, y_label, title):
         y=y,
         labels={"x": x_label, "y": y_label},
         title=title,
-        trendline="ols",
         trendline_color_override="red"
     )
-    fig.update_traces(marker=dict(size=5, opacity=0.5))
+    fig.update_traces(marker=dict(size=5, opacity=0.3))
     fig.show()
 
 # Use lower triangular indices, excluding diagonal
-n = cosine_similarity_matrix.shape[0]
+n = cos_similarity_matrix.shape[0]
 tril_indices = np.tril_indices(n, k=-1)
 
 plot_distance_correlation(
-    x=phylo_distance_matrix[tril_indices].numpy(),
-    y=cosine_similarity_matrix[tril_indices].numpy(),
-    x_label="Cosine Distance",
-    y_label="Phylogenetic Distance",
+    x=phylo_distance_matrix[tril_indices].to(torch.float32).cpu().numpy(),
+    y=cos_similarity_matrix[tril_indices].to(torch.float32).cpu().numpy(),
+    # labels=df["order"].tolist()[:subset],
+    x_label="Phylogenetic Distance",
+    y_label="Cosine Distance",
     title="Cosine Distance vs Phylogenetic Distance"
 )
 plot_distance_correlation(
-    x=phylo_distance_matrix[tril_indices].numpy(),
-    y=geo_distance_matrix[tril_indices].numpy(),
-    x_label="Geodesic Distance",
-    y_label="Phylogenetic Distance",
+    x=phylo_distance_matrix[tril_indices].to(torch.float32).cpu().numpy(),
+    y=geo_distance_matrix[tril_indices],
+    # labels=df["order"].tolist()[:subset],
+    x_label="Phylogenetic Distance",
+    y_label="Geodesic Distance",
     title="Geodesic Distance vs Phylogenetic Distance"
 )
+# %%
