@@ -71,6 +71,7 @@ def get_mean_embeddings(
         print("Loading all genomes embeddings from cache...")
         mean_embeddings_tensor = torch.load(f"{cache_path}/all_genomes_embeddings.pt")
         assert mean_embeddings_tensor.shape[1] == d_model, f"Expected: {d_model}, Got: {mean_embeddings_tensor.shape[1]}"
+        return mean_embeddings_tensor
     else:
         batch_mean_embeddings = []
         for genome_idx, tokenized_samples_from_genome in enumerate(
@@ -83,6 +84,7 @@ def get_mean_embeddings(
 
             if os.path.exists(f"{cache_path}/genome_{genome_idx}_hash_{genome_hash}.pt"):
                 print(f"Skipping genome {genome_idx}, already processed.")
+                batch_mean_embeddings.append(torch.load(f"{cache_path}/genome_{genome_idx}_hash_{genome_hash}.pt"))
                 continue
             
             genome_embedding = sample_embeddings[:, -average_over_last_bp:, :].mean(
@@ -103,3 +105,4 @@ def get_mean_embeddings(
         torch.save( 
             mean_embeddings, f"{cache_path}/all_genomes_embeddings.pt"
         )
+        return mean_embeddings
