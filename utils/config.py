@@ -29,7 +29,7 @@ class ExperimentConfig:
     # Data configuration
     num_species: int
     random_seed: int
-    data_source: str  # URL or identifier for the dataset
+    data_sources: list[str]  # URL or identifier for the dataset
     min_sequence_length: int
     remove_tags: bool
     
@@ -226,7 +226,9 @@ def create_default_config(**overrides) -> ExperimentConfig:
         "batch_size": 8,  # Will be adjusted based on model
         "num_species": 64,
         "random_seed": 42,
-        "data_source": "https://huggingface.co/datasets/arcinstitute/opengenome2/resolve/main/json/midtraining_specific/gtdb_v220_stitched/data_gtdb_train_chunk1.jsonl.gz",
+        "data_sources": [
+            "https://huggingface.co/datasets/arcinstitute/opengenome2/resolve/main/json/midtraining_specific/gtdb_v220_stitched/data_gtdb_train_chunk1.jsonl.gz",
+        ],
         "min_sequence_length": 40000,
         "remove_tags": True,
         "region_length": 4000,

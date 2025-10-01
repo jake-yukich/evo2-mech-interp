@@ -1,6 +1,6 @@
 # %%
-%load_ext autoreload
-%autoreload 2
+# %load_ext autoreload
+# %autoreload 2
 
 # %%
 import gc
@@ -9,7 +9,7 @@ import sys
 import random
 sys.path.append("..")  # For imports from parent dir
 
-from utils.config import ExperimentConfig, create_default_config
+from utils.config import create_default_config
 from utils.distances import build_knn_graph, geodesic_distance_matrix, cosine_similarity_matrix, mp_phylogenetic_distance_matrix
 from utils.data import load_data_from_hf, preprocess_gtdb_sequences, add_gtdb_accession
 from utils.phylogenetics import get_tag_to_gtdb_accession_map, filter_genomes_in_tree
@@ -31,7 +31,12 @@ import pandas as pd
 # Create configuration with custom parameters
 config = create_default_config(
     model="7b",
-    num_species=3600,
+    data_sources=[
+        "https://huggingface.co/datasets/arcinstitute/opengenome2/resolve/main/json/midtraining_specific/gtdb_v220_stitched/data_gtdb_train_chunk1.jsonl.gz",
+        "https://huggingface.co/datasets/arcinstitute/opengenome2/resolve/main/json/midtraining_specific/gtdb_v220_stitched/data_gtdb_train_chunk11.jsonl.gz",
+        "https://huggingface.co/datasets/arcinstitute/opengenome2/resolve/main/json/midtraining_specific/gtdb_v220_stitched/data_gtdb_train_chunk21.jsonl.gz",
+    ],
+    num_species=5000,
     num_samples=None,
     coverage_fraction=0.05,
     region_length=4000,
@@ -62,7 +67,7 @@ assert os.getcwd().endswith("evo2-mech-interp/notebooks"), "Run from notebooks/ 
 # DATA LOADING
 # =============================================================================
 
-data_files = [config.data_source]
+data_files = config.data_sources
 df = load_data_from_hf(data_files)
 
 # %%
