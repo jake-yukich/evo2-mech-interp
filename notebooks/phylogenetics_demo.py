@@ -1,10 +1,13 @@
 # %% 
+import pandas as pd
+import json
 import sys
 sys.path.append("/root/evo2-mech-interp")
 
 import datasets
 import re
 from pprint import pprint
+from tqdm import tqdm
 
 from utils.phylogenetics import gtdb_pipeline, get_gtdb_tree
 from utils.data import load_data_from_hf
@@ -13,13 +16,21 @@ from utils.data import load_data_from_hf
 data_files = [
     "https://huggingface.co/datasets/arcinstitute/opengenome2/resolve/main/json/midtraining_specific/gtdb_v220_stitched/data_gtdb_train_chunk1.jsonl.gz"
 ]
-# TODO: there don't seem to be any record IDs in the midtraining OpenGenome2 dataset for GTDB, but the species IDs are included in the text
+# # TODO: there don't seem to be any record IDs in the midtraining OpenGenome2 dataset for GTDB, but the species IDs are included in the text
 
-# df = load_data_from_hf(data_files)
-# load data manually since the species IDs are embedded in the text
-dataset = datasets.load_dataset("json", data_files=data_files)
-df = dataset["train"].to_pandas()
+# # df = load_data_from_hf(data_files)
+# # load data manually since the species IDs are embedded in the text
+# dataset = datasets.load_dataset("json", data_files=data_files)
+# df = dataset["train"].to_pandas()
+# df.head()
+
+# data_files = [
+#     "https://huggingface.co/datasets/arcinstitute/opengenome2/resolve/main/json/pretraining_or_both_phases/gtdb_v220_imgpr/data_gtdb_train_chunk1.jsonl.gz"
+# ]
+
+df = load_data_from_hf(data_files)
 df.head()
+
 # %%
 def extract_tags(text):
     # Extract the text between the first and second '|' characters
@@ -31,8 +42,49 @@ def extract_tags(text):
         return set()
     return text[first + 1:second]
 
-df["tag"] = df["text"].apply(extract_tags)
+
+df["species"] = df["tag"].str.split(";").str[-1]
 df.head()
+
+# %%
+df["record"].nunique()
+metadata = pd.read_csv("../data/gtdb/bac120_metadata_r220.tsv", sep="\t")
+metadata.head()
+
+# %%
+species_to_gtdb_accession = dict(zip(metadata["gtdb_taxonomy"].str.upper(), metadata["accession"]))
+
+# %%
+
+df["gtdb_record"] = df["tag"].map(species_to_gtdb_accession)
+df.head()
+
+# %%
+from ete3 import Tree
+tree_file: str = "/root/evo2-mech-interp/data/gtdb/bac120_r220.tree"
+tree = Tree(tree_file, format=1, quoted_node_names=True)
+# %%
+
+accession1, accession2 = list(df.loc[:1, "gtdb_record"].values)
+known_nodes = []
+leaf_names = set(tree.get_leaf_names())
+for accession in tqdm(df["gtdb_record"].unique()[:100]):
+    if accession in leaf_names:
+        known_nodes.append(tree&accession)
+print(f"Found {len(known_nodes)} known nodes out of {df['gtdb_record'].nunique()} unique accessions.")
+# %%
+# def extract_tags(text):
+#     # Extract the text between the first and second '|' characters
+#     first = text.find('|')
+#     if first == -1:
+#         return set()
+#     second = text.find('|', first + 1)
+#     if second == -1:
+#         return set()
+#     return text[first + 1:second]
+
+# df["tag"] = df["text"].apply(extract_tags)
+# df.head()
 
 # %%
 print(df.describe())
@@ -59,12 +111,11 @@ pprint(df["text"][0])
 # print(f"Rows with both '#'' and '@': {num_both}")
 
 # %%
-import pandas as pd
-metadata = pd.read_csv("../data/gtdb/bac120_metadata_r220.tsv", sep="\t")
-metadata.head()
 # %%
-print([col for col in metadata.columns if 'tax' in col])
+print([col for col in metadata.columns if 'ncbi' in col])
 
+# %%
+metadata[[col for col in metadata.columns if 'accession' in col]].head()
 # %%
 metadata["gtdb_taxonomy"][0]
 # %%

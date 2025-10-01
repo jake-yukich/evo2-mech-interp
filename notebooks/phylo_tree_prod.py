@@ -5,9 +5,13 @@ import os
 import random
 from itertools import batched, product
 from pprint import pprint
+import sys
 from time import perf_counter
+from typing import Literal
 
 import plotly.graph_objects as go
+import plotly.express as px
+import numpy as np
 import torch
 import umap
 import datasets
@@ -16,6 +20,11 @@ from evo2 import Evo2
 from tqdm import tqdm
 import pandas as pd
 import hashlib
+sys.path.append("..")
+from utils.distances import build_knn_graph, geodesic_distance_matrix, cosine_similarity_matrix, mp_phylogenetic_distance_matrix
+
+from utils.data import remove_tags
+from utils.phylogenetics import get_tag_to_gtdb_accession_map, get_tree
 
 random.seed(42)
 # Enable optimizations
@@ -35,21 +44,33 @@ AVERAGE_OVER_LAST_BP = (
 )
 D_MODEL_7B = 4096
 D_MODEL_1B = 1920
-MODEL = "7b"  # "1b" or "7b"
-D_MODEL = D_MODEL_1B if MODEL == "1b" else D_MODEL_7B if "7b" else None
+MODEL: Literal["1b", "7b"] = "7b" 
+D_MODEL = D_MODEL_1B if MODEL == "1b" else D_MODEL_7B if MODEL == "7b" else None
 BATCH_SIZE = 48 if MODEL == "1b" else 8  # Start here and increase if possible
 RANDOM_SEED = 42
-LAYER_NAME = "blocks.24.mlp.l3"  # Move outside loop
-# CACHE_PATH = f"data/embeddings/model_{MODEL}/num_samples_{NUM_SAMPLES}/layer_{LAYER_NAME}/"
-CACHE_PATH = f"data/embeddings/model_{MODEL}/coverage_frac_{COVERAGE_FRACTION}/layer_{LAYER_NAME}/"
+LAYER_NAME = "blocks.24.mlp.l3"
+
+SAMPLING_CONFIG = {
+    "num_samples": 5,
+    "coverage_fraction": None,
+}
+SAMPLING_STR = f"num_samples_{NUM_SAMPLES}" if SAMPLING_CONFIG["num_samples"] is not None else f"coverage_frac_{COVERAGE_FRACTION}"
+CACHE_PATH = f"data/embeddings/model_{MODEL}/{SAMPLING_STR}/layer_{LAYER_NAME}/"
+
+os.makedirs("data/embeddings", exist_ok=True)
+os.makedirs(CACHE_PATH, exist_ok=True)
 
 os.makedirs("data/embeddings", exist_ok=True)
 os.makedirs(CACHE_PATH, exist_ok=True)
 
 
 # %%
+# data_files = [
+#     "https://huggingface.co/datasets/arcinstitute/opengenome2/resolve/main/json/pretraining_or_both_phases/gtdb_v220_imgpr/data_gtdb_train_chunk1.jsonl.gz"
+# ]
+# %% - LOAD DATA
 data_files = [
-    "https://huggingface.co/datasets/arcinstitute/opengenome2/resolve/main/json/pretraining_or_both_phases/gtdb_v220_imgpr/data_gtdb_train_chunk1.jsonl.gz"
+    "https://huggingface.co/datasets/arcinstitute/opengenome2/resolve/main/json/midtraining_specific/gtdb_v220_stitched/data_gtdb_train_chunk1.jsonl.gz"
 ]
 
 def load_data_from_hf(data_files: list[str]) -> pd.DataFrame:
@@ -59,37 +80,46 @@ def load_data_from_hf(data_files: list[str]) -> pd.DataFrame:
     dataset = datasets.load_dataset("json", data_files=data_files)
     return pd.DataFrame(dataset["train"])
 
-def load_json(file_path: str) -> pd.DataFrame:
-    """
-    Load a JSON file into a pandas DataFrame.
-    """
-    with open(file_path) as f:
-        return json.load(f)
 
-phylotags = load_json("/root/evo2-mech-interp/notebooks/phylotags_1024.json")
 df = load_data_from_hf(data_files)
 
 # %% - Get items with longest sequences
 # TODO: consider how sampling might be biased by taking top n sorted sequences
 
 def preprocess(df: pd.DataFrame, min_length: int, subset: int) -> pd.DataFrame:
-    """Filter sequences by minimum length, shuffle and return a subset."""
+    """Filter sequences by minimum length, shuffle, and return a subset."""
+    print("Preprocessing data...")
     df["sequence_length"] = df["text"].apply(len)
     filtered_df = df[df["sequence_length"] > min_length]
     shuffled_df = filtered_df.sample(frac=1, random_state=RANDOM_SEED).reset_index(drop=True)
     shuffled_df = shuffled_df.rename(columns={"text": "sequence"})
+    sequences_with_tags_removed, tags = remove_tags(shuffled_df["sequence"])
+    shuffled_df["sequence"] = sequences_with_tags_removed
+    shuffled_df["tags"] = tags
     return shuffled_df.head(subset)
 
-def select_specific(df: pd.DataFrame, records: dict[str, str]) -> pd.DataFrame:
-    """Select specific records by their accession IDs."""
-    all_records = set(df["record"])
-    records = set(accession_id for accession_id, tag in records.items() if not ("C__NONE" in tag and "O__NONE" in tag and "F__NONE" in tag))
-    phylotags_with_enough_info = all_records & records
-    return df[df["record"].isin(phylotags_with_enough_info)].reset_index(drop=True).rename(columns={"text": "sequence"})
+def add_gtdb_accession(df: pd.DataFrame) -> pd.DataFrame:
+    """Add Gtdb accession IDs to the dataframe."""
+    print("Adding Gtdb accession IDs...")
+    df["gtdb_accession"] = df["tags"].map(get_tag_to_gtdb_accession_map())
+    return df
+
+# def select_specific(df: pd.DataFrame, records: dict[str, str]) -> pd.DataFrame:
+#     """Select specific records by their accession IDs."""
+#     all_records = set(df["record"])
+#     records = set(accession_id for accession_id, tag in records.items() if not ("C__NONE" in tag and "O__NONE" in tag and "F__NONE" in tag))
+#     phylotags_with_enough_info = all_records & records
+#     return df[df["record"].isin(phylotags_with_enough_info)].reset_index(drop=True).rename(columns={"text": "sequence"})
 
 
-# df = preprocess(df, NUM_SAMPLES * REGION_LENGTH, subset=NUM_SPECIES)
-df = select_specific(df, phylotags)
+df = preprocess(df, NUM_SAMPLES * REGION_LENGTH, subset=NUM_SPECIES)
+df = add_gtdb_accession(df)
+# TODO: extract into preprocess ===
+df["class"] = df["tags"].str.split(";").str[2]
+df["order"] = df["tags"].str.split(";").str[3]
+df["family"] = df["tags"].str.split(";").str[4]
+df = df.dropna(subset=["gtdb_accession"]).reset_index(drop=True)
+# ===
 df.to_csv(f"{CACHE_PATH}/genomes_metadata.csv", index=False)
 df.head()
 
@@ -174,8 +204,7 @@ for row in df.itertuples():
     sampled_regions = sample_genome(
         row.sequence, 
         sample_region_length=REGION_LENGTH, 
-        # num_samples=NUM_SAMPLES
-        coverage_fraction=COVERAGE_FRACTION
+        **SAMPLING_CONFIG
     )
     samples["genome_idx"].extend([row.Index] * len(sampled_regions))
     samples["sample"].extend(sampled_regions)
@@ -249,6 +278,8 @@ def batch_inference(
     return sample_embeddings
 
 print("Processing embeddings...")
+if os.path.exists(f"{CACHE_PATH}/all_genomes_embeddings.pt"):
+    mean_embeddings_tensor = torch.load(f"{CACHE_PATH}/all_genomes_embeddings.pt")
 with torch.no_grad():
     mean_embeddings = []
     for genome_idx, tokenized_samples_from_genome in enumerate(
@@ -294,22 +325,6 @@ def umap_fit_transform(embeddings: torch.Tensor) -> torch.Tensor:
 
 embedding_3d = umap_fit_transform(mean_embeddings_tensor)
 
-# %%
-
-phylotags_df = pd.DataFrame.from_dict(phylotags, orient="index", columns=["phylotag"]).reset_index().rename(columns={"index": "record"})
-df = pd.merge(df, phylotags_df, on="record", how="left")
-df = df.dropna(subset=["phylotag"]).reset_index(drop=True)
-
-phylo_cols = ["domain", "phylum", "class", "order", "family", "genus", "species"]
-def split_phylotag(tag):
-    parts = tag.split(";")
-    values = [p.split("__", 1)[1] if "__" in p else None for p in parts]
-    # Pad missing values if tag is incomplete
-    values += [None] * (len(phylo_cols) - len(values))
-    return pd.Series(values, index=phylo_cols)
-
-df[phylo_cols] = df["phylotag"].apply(split_phylotag)
-df.head()
 
 # %%
 import plotly.express as px
@@ -364,7 +379,7 @@ def plot_3d_embedding(embedding_3d: torch.Tensor, title: str, labels: list[str])
     return fig
 
 for category in ["class", "order", "family"]:
-    category_df = df.loc[:, ["record", category]]
+    category_df = df.loc[:, ["sequence", category]]
     mask = category_df[category].notna() & (category_df[category] != "NONE")
     value_counts = category_df[mask][category].value_counts()
     valid_values = value_counts[value_counts > 20].index
@@ -380,3 +395,43 @@ for category in ["class", "order", "family"]:
     fig.show()
 
 # %%
+# Build the KNN adjacency graph and compute geodesics
+adjacency_matrix = build_knn_graph(mean_embeddings_tensor, k=27, distance='cosine', weighted=False)
+geo_distance_matrix = geodesic_distance_matrix(adjacency_matrix)
+cosine_similarity_matrix = cosine_similarity_matrix(mean_embeddings_tensor)
+# %%
+# Calculate phylogenetic distance matrix
+phylo_distance_matrix = mp_phylogenetic_distance_matrix(df["gtdb_accession"].tolist(), get_tree())
+torch.save(phylo_distance_matrix, f"{CACHE_PATH}/phylogenetic_distance_matrix.pt")
+
+# %%
+def plot_distance_correlation(x, y, x_label, y_label, title):
+    fig = px.scatter(
+        x=x,
+        y=y,
+        labels={"x": x_label, "y": y_label},
+        title=title,
+        trendline="ols",
+        trendline_color_override="red"
+    )
+    fig.update_traces(marker=dict(size=5, opacity=0.5))
+    fig.show()
+
+# Use lower triangular indices, excluding diagonal
+n = cosine_similarity_matrix.shape[0]
+tril_indices = np.tril_indices(n, k=-1)
+
+plot_distance_correlation(
+    x=phylo_distance_matrix[tril_indices].numpy(),
+    y=cosine_similarity_matrix[tril_indices].numpy(),
+    x_label="Cosine Distance",
+    y_label="Phylogenetic Distance",
+    title="Cosine Distance vs Phylogenetic Distance"
+)
+plot_distance_correlation(
+    x=phylo_distance_matrix[tril_indices].numpy(),
+    y=geo_distance_matrix[tril_indices].numpy(),
+    x_label="Geodesic Distance",
+    y_label="Phylogenetic Distance",
+    title="Geodesic Distance vs Phylogenetic Distance"
+)

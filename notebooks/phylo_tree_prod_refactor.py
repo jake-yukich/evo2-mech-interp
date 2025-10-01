@@ -9,7 +9,7 @@ from pprint import pprint
 from time import perf_counter
 from typing import Literal
 sys.path.append("..")  # For imports from parent dir
-from utils.distances import build_knn_graph, geodesic_distance_matrix, pairwise_cosine_similarity
+from utils.distances import build_knn_graph, geodesic_distance_matrix, cosine_similarity_matrix
 from utils.data import load_data_from_hf, load_phylotags, preprocess, filter_by_phylotags
 from utils.sampling import sample_genome
 from utils.inference import get_mean_embeddings, batch_tokenize
@@ -234,5 +234,5 @@ for category in ["class", "order", "family"]:
 # Build the KNN adjacency graph and compute geodesics
 adjacency_matrix = build_knn_graph(mean_embeddings_tensor, k=27, distance='cosine', weighted=False)
 geo_distance_matrix = geodesic_distance_matrix(adjacency_matrix)
-cosine_distance_matrix = pairwise_cosine_similarity(mean_embeddings_tensor)
+cosine_distance_matrix = cosine_similarity_matrix(mean_embeddings_tensor)
 # %%

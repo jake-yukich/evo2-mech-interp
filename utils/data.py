@@ -9,6 +9,23 @@ def load_data_from_hf(data_files: list[str]) -> pd.DataFrame:
     dataset = datasets.load_dataset("json", data_files=data_files)
     return pd.DataFrame(dataset["train"])
 
+def extract_tag(text: str) -> str:
+    """Extract the text between the first and second '|' characters"""
+    first = text.find('|')
+    if first == -1:
+        return set()
+    second = text.find('|', first + 1)
+    if second == -1:
+        return set()
+    return text[first + 1:second]
+
+def remove_tags(sequences: pd.Series) -> tuple[pd.Series, pd.Series]:
+    """Remove tags from sequences and return cleaned sequences and tags."""
+    tags = sequences.apply(extract_tag)
+    cleaned_sequences = pd.Series([s1.replace(f"|{s2}|", '') for s1, s2 in zip(sequences, tags)])
+    assert not any(cleaned_sequences.str.contains('|', regex=False)), "Some sequences still contain '|' characters"
+    return cleaned_sequences, tags
+
 def load_phylotags(file_path: str) -> pd.DataFrame:
     """
     Load a phylotags JSON file into a pandas DataFrame.

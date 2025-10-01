@@ -6,6 +6,7 @@ from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import dijkstra
 from jaxtyping import Float
 from torch import Tensor
+from ete3 import Tree
 
 def build_knn_graph(points: Float[Tensor, "n d"], k: int, distance: str = 'euclidean', weighted: bool = True) -> csr_matrix:
     """
@@ -98,7 +99,7 @@ def geodesic_distance_matrix(adjacency_matrix: csr_matrix) -> np.ndarray:
     distance_matrix = dijkstra(adjacency_matrix, return_predecessors=False)
     return distance_matrix
 
-def pairwise_cosine_similarity(X: Float[Tensor, "n d"]) -> Float[Tensor, "n n"]:
+def cosine_similarity_matrix(X: Float[Tensor, "n d"]) -> Float[Tensor, "n n"]:
     """
     Compute pairwise cosine similarity between all vectors.
     
@@ -110,6 +111,77 @@ def pairwise_cosine_similarity(X: Float[Tensor, "n d"]) -> Float[Tensor, "n n"]:
     """
     X_norm = X / X.norm(dim=1, keepdim=True)
     return X_norm @ X_norm.T
+
+def phylogenetic_distance_matrix(accession_ids: list[str], tree: Tree) -> torch.Tensor:
+    """
+    Compute pairwise phylogenetic distances between sequences given a series of accession IDs and a phylogenetic tree.
+    """
+    n = len(accession_ids)
+    distance_matrix = torch.zeros((n, n), dtype=torch.float32)
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            dist = tree.get_distance(accession_ids[i], accession_ids[j])
+            distance_matrix[i, j] = dist
+            distance_matrix[j, i] = dist
+
+    return distance_matrix
+
+
+def _compute_distance_chunk(args):
+    """Worker function to compute distances for a chunk of row indices."""
+    row_indices, accession_ids, tree_path = args
+    
+    # Each worker loads its own tree
+    tree = Tree(tree_path, format=1, quoted_node_names=True)
+    leaves = tree.get_leaf_names()
+    
+    results = []
+    for i in row_indices:
+        for j in range(i + 1, len(accession_ids)):
+            if accession_ids[i] in leaves and accession_ids[j] in leaves:
+                dist = tree.get_distance(accession_ids[i], accession_ids[j])
+            else:
+                dist = float('nan')
+            results.append((i, j, dist))
+    
+    return results
+
+def mp_phylogenetic_distance_matrix(accession_ids: list[str], tree_path: str, n_processes: int = 12) -> torch.Tensor:
+    """
+    Compute pairwise phylogenetic distances using multiprocessing.
+    
+    Args:
+        accession_ids: List of accession IDs
+        tree_path: Path to the phylogenetic tree file
+        n_processes: Number of worker processes
+    """
+    n = len(accession_ids)
+    distance_matrix = torch.zeros((n, n), dtype=torch.float32)
+    
+    # Divide rows among workers
+    chunk_size = n // n_processes
+    chunks = []
+    for proc in range(n_processes):
+        start = proc * chunk_size
+        end = n if proc == n_processes - 1 else (proc + 1) * chunk_size
+        row_indices = list(range(start, end))
+        chunks.append((row_indices, accession_ids, tree_path))
+    
+    # Process in parallel
+    with Pool(processes=n_processes) as pool:
+        results = pool.map(_compute_distance_chunk, chunks)
+    
+    # Fill the matrix
+    for chunk_results in results:
+        for i, j, dist in chunk_results:
+            distance_matrix[i, j] = dist
+            distance_matrix[j, i] = dist
+    
+    return distance_matrix
+
+
+
 
 if __name__ == "__main__":
 

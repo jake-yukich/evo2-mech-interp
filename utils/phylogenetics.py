@@ -267,3 +267,21 @@ def gtdb_pipeline(records: list[str]) -> dict:
 
 # use the phylo tags from midtraining OpenGenome2 data to traverse the GTDB tree
 # return a node, which downstream will be used to get the distance from another node
+
+def get_tag_to_gtdb_accession_map(metadata_path: str = "../data/gtdb/bac120_metadata_r220.tsv") -> dict:
+    """
+    Returns a mapping of species names to GTDB accessions.
+    """
+    metadata = pd.read_csv(metadata_path, sep="\t")
+    return dict(zip(metadata["gtdb_taxonomy"].str.upper(), metadata["accession"]))
+
+
+def get_tree(tree_file: str = "/root/evo2-mech-interp/data/gtdb/bac120_r220.tree") -> Tree:
+    """
+    Loads and returns the GTDB tree.
+    """
+    assert os.path.exists(tree_file)
+    tree = Tree(tree_file, format=1, quoted_node_names=True)
+    return tree
+
+# %%
