@@ -3,6 +3,50 @@ import torch
 import umap
 import plotly.express as px
 import plotly.graph_objects as go
+from pathlib import Path
+
+
+def save_plotly_figure(fig: go.Figure, filepath: Path, formats: list[str] = ["html", "png"]):
+    """
+    Save a Plotly figure to multiple formats.
+    
+    Args:
+        fig: Plotly Figure object
+        filepath: Base filepath (without extension)
+        formats: List of formats to save (e.g., ["html", "png"])
+    
+    Note:
+        PNG export requires kaleido package: pip install kaleido
+    """
+    saved_formats = []
+    
+    for fmt in formats:
+        try:
+            output_path = filepath.with_suffix(f".{fmt}")
+            
+            if fmt == "html":
+                fig.write_html(output_path)
+                saved_formats.append(fmt)
+            elif fmt == "png":
+                # PNG requires kaleido
+                fig.write_image(output_path, width=1200, height=900)
+                saved_formats.append(fmt)
+            elif fmt == "svg":
+                fig.write_image(output_path, width=1200, height=900)
+                saved_formats.append(fmt)
+            elif fmt == "pdf":
+                fig.write_image(output_path, width=1200, height=900)
+                saved_formats.append(fmt)
+            else:
+                print(f"Warning: Unknown format '{fmt}', skipping")
+                
+        except Exception as e:
+            if "kaleido" in str(e).lower() or "image export" in str(e).lower():
+                print(f"Warning: Cannot save as {fmt} (kaleido not installed). Install with: pip install kaleido")
+            else:
+                print(f"Warning: Failed to save as {fmt}: {e}")
+    
+    return saved_formats
 
 
 def umap_reduce_3d(embeddings: torch.Tensor, random_state: int = 42) -> torch.Tensor:

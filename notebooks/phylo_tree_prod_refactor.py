@@ -1,6 +1,6 @@
 # %%
-# %load_ext autoreload
-# %autoreload 2
+%load_ext autoreload
+%autoreload 2
 
 # %%
 import gc
@@ -15,7 +15,7 @@ from utils.data import load_data_from_hf, preprocess_gtdb_sequences, add_gtdb_ac
 from utils.phylogenetics import get_tag_to_gtdb_accession_map, filter_genomes_in_tree
 from utils.sampling import sample_genome
 from utils.inference import get_mean_embeddings, batch_tokenize
-from utils.visualization import umap_reduce_3d, plot_umap_3d, plot_distance_scatter
+from utils.visualization import umap_reduce_3d, plot_umap_3d, plot_distance_scatter, save_plotly_figure
 
 import numpy as np
 import torch
@@ -216,8 +216,11 @@ for category in ["class", "order", "family"]:
         labels=labels_for_plot,
     )
     fig.show()
-    # Optionally save
-    # fig.write_html(experiment_dir / f"3d_embedding_{category}.html")
+    
+    # Save to HTML and PNG
+    filepath = experiment_dir / f"umap_3d_{category}"
+    saved_formats = save_plotly_figure(fig, filepath, formats=["html", "png"])
+    print(f"Saved {category} visualization: {', '.join(saved_formats)}")
 
 # %%
 # =============================================================================
@@ -255,22 +258,33 @@ n = cos_similarity_matrix.shape[0]
 tril_indices = np.tril_indices(n, k=-1)
 
 # Plot cosine similarity vs phylogenetic distance
-fig = plot_distance_scatter(
+fig_cosine = plot_distance_scatter(
     x=phylo_distance_matrix[tril_indices].to(torch.float32).cpu().numpy(),
     y=cos_similarity_matrix[tril_indices].to(torch.float32).cpu().numpy(),
     x_label="Phylogenetic Distance",
     y_label="Cosine Similarity",
     title="Cosine Similarity vs Phylogenetic Distance"
 )
-fig.show()
+fig_cosine.show()
+
+# Save cosine similarity plot
+filepath = experiment_dir / "distance_cosine_vs_phylogenetic"
+saved_formats = save_plotly_figure(fig_cosine, filepath, formats=["html", "png"])
+print(f"Saved cosine similarity plot: {', '.join(saved_formats)}")
 
 # Plot geodesic distance vs phylogenetic distance
-fig = plot_distance_scatter(
+fig_geodesic = plot_distance_scatter(
     x=phylo_distance_matrix[tril_indices].to(torch.float32).cpu().numpy(),
     y=geo_distance_matrix[tril_indices],
     x_label="Phylogenetic Distance",
     y_label="Geodesic Distance",
     title="Geodesic Distance vs Phylogenetic Distance"
 )
-fig.show()
+fig_geodesic.show()
+
+# Save geodesic distance plot
+filepath = experiment_dir / "distance_geodesic_vs_phylogenetic"
+saved_formats = save_plotly_figure(fig_geodesic, filepath, formats=["html", "png"])
+print(f"Saved geodesic distance plot: {', '.join(saved_formats)}")
+
 # %%
