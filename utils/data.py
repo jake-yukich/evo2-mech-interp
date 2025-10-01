@@ -26,13 +26,6 @@ def extract_tags(sequences: pd.Series) -> tuple[pd.Series, pd.Series]:
     assert not any(cleaned_sequences.str.contains('|', regex=False)), "Some sequences still contain '|' characters"
     return cleaned_sequences, tags
 
-def load_phylotags(file_path: str) -> pd.DataFrame:
-    """
-    Load a phylotags JSON file into a pandas DataFrame.
-    """
-    with open(file_path) as f:
-        phylotags = json.load(f)
-        return pd.DataFrame.from_dict(phylotags, orient="index", columns=["phylotag"]).reset_index().rename(columns={"index": "record"})
     
 def preprocess(df: pd.DataFrame, min_length: int, subset: int, random_seed: int) -> pd.DataFrame:
     """Filter sequences by minimum length, shuffle and return a subset."""
