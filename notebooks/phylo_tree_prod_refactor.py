@@ -12,7 +12,7 @@ sys.path.append("..")  # For imports from parent dir
 from utils.config import ExperimentConfig, create_default_config
 from utils.distances import build_knn_graph, geodesic_distance_matrix, cosine_similarity_matrix, mp_phylogenetic_distance_matrix
 from utils.data import load_data_from_hf, preprocess_gtdb_sequences, add_gtdb_accession
-from utils.phylogenetics import get_tag_to_gtdb_accession_map
+from utils.phylogenetics import get_tag_to_gtdb_accession_map, filter_genomes_in_tree
 from utils.sampling import sample_genome
 from utils.inference import get_mean_embeddings, batch_tokenize
 from utils.visualization import umap_reduce_3d, plot_umap_3d, plot_distance_scatter
@@ -31,14 +31,15 @@ import pandas as pd
 # Create configuration with custom parameters
 config = create_default_config(
     model="7b",
-    num_species=64,
-    num_samples=5,
-    coverage_fraction=None,
+    num_species=3600,
+    num_samples=None,
+    coverage_fraction=0.05,
     region_length=4000,
     average_over_last_bp=2000,
     layer_name="blocks.24.mlp.l3",
     random_seed=42,
     min_sequence_length=40000,
+    remove_tags=True,
 )
 
 # Print configuration summary
@@ -78,6 +79,10 @@ df = preprocess_gtdb_sequences(
 )
 df = add_gtdb_accession(df, get_tag_to_gtdb_accession_map())
 df = df.dropna(subset=["gtdb_accession"]).reset_index(drop=True)
+
+# Filter to only keep genomes that are in the phylogenetic tree
+# This prevents wasting resources on genomes that will be dropped later
+df = filter_genomes_in_tree(df, config.gtdb_tree_path, accession_column="gtdb_accession")
 
 # Save metadata to experiment directory
 df.to_csv(experiment_dir / "genomes_metadata.csv", index=False)
