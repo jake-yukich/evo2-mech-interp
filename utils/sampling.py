@@ -18,8 +18,6 @@ def sample_genome(
     """
     Randomly sample non-overlapping regions from the input text until at least
     `coverage_fraction` (default 5%) of the text is covered OR `num_samples` (default 10) samples are obtained
-    .
-    Returns a list of non-overlapping sampled regions.
     """
     if (coverage_fraction is not None) and (num_samples is not None):
         raise ValueError("Specify either coverage_fraction or num_samples, not both.")

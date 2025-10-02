@@ -1,11 +1,3 @@
-"""
-Configuration management for evo2-mech-interp experiments.
-
-This module provides a dataclass for experiment configuration and utilities
-for cache validation to ensure cached results are only reused when running
-identical experiments.
-"""
-
 from dataclasses import dataclass, asdict
 from typing import Literal, Optional
 import json
@@ -56,17 +48,14 @@ class ExperimentConfig:
     
     @property
     def d_model(self) -> int:
-        """Dimension of model embeddings."""
         return 1920 if self.model == "1b" else 4096
     
     @property
     def model_name(self) -> str:
-        """Full model name for Evo2."""
         return "evo2_1b_base" if self.model == "1b" else "evo2_7b"
     
     @property
     def sampling_str(self) -> str:
-        """String representation of sampling configuration for cache paths."""
         if self.num_samples is not None:
             return f"num_samples_{self.num_samples}"
         else:
@@ -74,15 +63,7 @@ class ExperimentConfig:
     
     @property
     def config_hash(self) -> str:
-        """
-        Generate a hash of the configuration for cache validation.
-        
-        This hash uniquely identifies the experiment configuration and is used
-        to ensure cached results match the current experiment parameters.
-        """
-        # Convert config to a stable JSON string
         config_dict = asdict(self)
-        # Sort keys to ensure consistent ordering
         config_json = json.dumps(config_dict, sort_keys=True)
         return hashlib.sha256(config_json.encode()).hexdigest()[:16]
     
@@ -114,24 +95,9 @@ class ExperimentConfig:
         return experiment_dir
     
     def get_embeddings_dir(self, base_dir: str = "data/experiments") -> Path:
-        """
-        Get the directory for individual genome embeddings.
-        
-        Args:
-            base_dir: Base directory for all experiments
-            
-        Returns:
-            Path object for the embeddings subdirectory
-        """
         return self.get_cache_path(base_dir) / "embeddings"
     
     def save(self, cache_path: Path):
-        """
-        Save configuration to cache directory.
-        
-        Args:
-            cache_path: Directory to save configuration
-        """
         cache_path.mkdir(parents=True, exist_ok=True)
         config_file = cache_path / "experiment_config.json"
         with open(config_file, "w") as f:
@@ -139,33 +105,12 @@ class ExperimentConfig:
     
     @classmethod
     def load(cls, cache_path: Path) -> "ExperimentConfig":
-        """
-        Load configuration from cache directory.
-        
-        Args:
-            cache_path: Directory containing saved configuration
-            
-        Returns:
-            ExperimentConfig instance
-            
-        Raises:
-            FileNotFoundError: If config file doesn't exist
-        """
         config_file = cache_path / "experiment_config.json"
         with open(config_file, "r") as f:
             config_dict = json.load(f)
         return cls(**config_dict)
     
     def validate_cache(self, cache_path: Path) -> bool:
-        """
-        Validate that cached results match this configuration.
-        
-        Args:
-            cache_path: Directory containing cached results
-            
-        Returns:
-            True if cache is valid for this config, False otherwise
-        """
         if not cache_path.exists():
             return False
         
@@ -211,15 +156,6 @@ class ExperimentConfig:
 
 
 def create_default_config(**overrides) -> ExperimentConfig:
-    """
-    Create a configuration with default values.
-    
-    Args:
-        **overrides: Any config parameters to override from defaults
-        
-    Returns:
-        ExperimentConfig instance
-    """
     defaults = {
         "model": "7b",
         "layer_name": "blocks.24.mlp.l3",

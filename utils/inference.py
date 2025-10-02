@@ -68,24 +68,7 @@ def get_mean_embeddings(
     average_over_last_bp: int,
     force_recompute: bool = False,
 ) -> torch.Tensor:
-    """
-    Compute or load mean embeddings for all genomes.
-    
-    Args:
-        df: DataFrame with genome metadata (must have 'sequence' column)
-        tokenized_samples: Pre-tokenized genomic regions for each genome
-        evo2_model: Evo2 model instance
-        batch_size: Batch size for inference
-        experiment_dir: Path to experiment directory (not the embeddings subdir)
-        d_model: Model embedding dimension
-        region_length: Length of each genomic region
-        layer_name: Name of layer to extract embeddings from
-        average_over_last_bp: Only average over last N base pairs
-        force_recompute: If True, ignore cache and recompute all embeddings
-        
-    Returns:
-        Tensor of shape (num_genomes, d_model) with mean embeddings
-    """
+    """Compute or load mean embeddings for all genomes."""
     experiment_dir = Path(experiment_dir)
     experiment_dir.mkdir(parents=True, exist_ok=True)
     

@@ -100,15 +100,7 @@ def geodesic_distance_matrix(adjacency_matrix: csr_matrix) -> np.ndarray:
     return distance_matrix
 
 def cosine_similarity_matrix(X: Float[Tensor, "n d"]) -> Float[Tensor, "n n"]:
-    """
-    Compute pairwise cosine similarity between all vectors.
-    
-    Args:
-        X: tensor of shape (n, d)
-    
-    Returns:
-        similarity matrix of shape (n, n)
-    """
+    """Compute pairwise cosine similarity between all vectors."""
     X_norm = X / X.norm(dim=1, keepdim=True)
     return X_norm @ X_norm.T
 
@@ -148,14 +140,7 @@ def _compute_distance_chunk(args):
     return results
 
 def mp_phylogenetic_distance_matrix(accession_ids: list[str], tree_path: str, n_processes: int = 12) -> torch.Tensor:
-    """
-    Compute pairwise phylogenetic distances using multiprocessing.
-    
-    Args:
-        accession_ids: List of accession IDs
-        tree_path: Path to the phylogenetic tree file
-        n_processes: Number of worker processes
-    """
+    """Compute pairwise phylogenetic distances using multiprocessing."""
     n = len(accession_ids)
     distance_matrix = torch.zeros((n, n), dtype=torch.float32)
     

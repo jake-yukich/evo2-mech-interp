@@ -6,16 +6,7 @@ import plotly.graph_objects as go
 
 
 def umap_reduce_3d(embeddings: torch.Tensor, random_state: int = 42) -> torch.Tensor:
-    """
-    Fit UMAP on embeddings and return 3D reduced embeddings.
-    
-    Args:
-        embeddings: Tensor of shape (n_samples, d_model)
-        random_state: Random seed for reproducibility
-        
-    Returns:
-        Tensor of shape (n_samples, 3) with 3D UMAP embeddings
-    """
+    """Fit UMAP on embeddings and return 3D reduced embeddings."""
     reducer = umap.UMAP(n_components=3, random_state=random_state)
     umap_embeddings = reducer.fit_transform(
         embeddings.to(torch.float32).cpu().numpy()
@@ -29,18 +20,7 @@ def plot_umap_3d(
     labels: list[str],
     palette: list[str] = None
 ) -> go.Figure:
-    """
-    Plot 3D UMAP embedding using Plotly, coloring by categorical label.
-    
-    Args:
-        embedding_3d: Tensor of shape (n_points, 3) with 3D coordinates
-        title: Plot title
-        labels: List of categorical labels for each point
-        palette: Optional color palette (defaults to plotly Light24)
-        
-    Returns:
-        Plotly Figure object
-    """
+    """Plot 3D UMAP embedding using Plotly, coloring by categorical label."""
     # Ensure data is NumPy for Plotly rendering
     coords = (
         embedding_3d.detach().cpu().numpy()

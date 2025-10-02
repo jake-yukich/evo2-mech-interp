@@ -1,5 +1,4 @@
 import datasets
-import json
 import pandas as pd
 
 def load_data_from_hf(data_files: list[str]) -> pd.DataFrame:
@@ -13,10 +12,10 @@ def extract_tag(text: str) -> str:
     """Extract the text between the first and second '|' characters"""
     first = text.find('|')
     if first == -1:
-        return set()
+        return ""
     second = text.find('|', first + 1)
     if second == -1:
-        return set()
+        return ""
     return text[first + 1:second]
 
 def extract_tags(sequences: pd.Series) -> tuple[pd.Series, pd.Series]:
@@ -35,27 +34,8 @@ def preprocess(df: pd.DataFrame, min_length: int, subset: int, random_seed: int)
     df = df.rename(columns={"text": "sequence"})
     return df.head(subset)
 
-def filter_by_phylotags(df: pd.DataFrame, phylotags_df: pd.DataFrame) -> pd.DataFrame:
-    """Filter sequences to keep only those with specific phylotags."""
-    all_records = set(df["record"])
-    phylotag_records = set(accession_id for accession_id, tag in phylotags_df.itertuples() if not ("C__NONE" in tag and "O__NONE" in tag and "F__NONE" in tag))
-    keep_records = all_records & phylotag_records
-    return df[df["record"].isin(keep_records)].reset_index(drop=True).rename(columns={"text": "sequence"})
-
 def preprocess_gtdb_sequences(df: pd.DataFrame, min_length: int, subset: int, random_seed: int, remove_tags: bool) -> pd.DataFrame:
-    """
-    Filter sequences by minimum length, shuffle, remove tags, and extract taxonomic columns.
-    
-    Args:
-        df: DataFrame with 'text' column containing sequences with embedded tags
-        min_length: Minimum sequence length to keep
-        subset: Number of sequences to return
-        random_seed: Random seed for shuffling
-        remove_tags: Whether to remove tags from sequences
-
-    Returns:
-        DataFrame with cleaned sequences and extracted taxonomic columns
-    """
+    """Filter sequences by minimum length, shuffle, remove tags, and extract taxonomic columns."""
     print("Preprocessing data...")
     df["sequence_length"] = df["text"].apply(len)
     filtered_df = df[df["sequence_length"] > min_length]
@@ -76,16 +56,6 @@ def preprocess_gtdb_sequences(df: pd.DataFrame, min_length: int, subset: int, ra
     return shuffled_df.head(subset)
 
 def add_gtdb_accession(df: pd.DataFrame, tag_to_accession_map: dict) -> pd.DataFrame:
-    """
-    Add GTDB accession IDs to the dataframe.
-    
-    Args:
-        df: DataFrame with 'tags' column
-        tag_to_accession_map: Mapping from tags to GTDB accession IDs
-        
-    Returns:
-        DataFrame with 'gtdb_accession' column added
-    """
-    print("Adding GTDB accession IDs...")
+    """Add GTDB accession IDs to the dataframe."""
     df["gtdb_accession"] = df["tags"].map(tag_to_accession_map)
     return df
