@@ -1,3 +1,8 @@
+### attempting to get things to work on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition machine
+
+(currently unsuccessful)
+
+
 ```
 conda env create -f environment.yaml # pip will fail
 conda activate evo2
