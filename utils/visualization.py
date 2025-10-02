@@ -50,41 +50,16 @@ def save_plotly_figure(fig: go.Figure, filepath: Path, formats: list[str] = ["ht
 
 
 def umap_reduce_3d(embeddings: torch.Tensor, random_state: int = 42) -> torch.Tensor:
-    """
-    Fit UMAP on embeddings and return 3D reduced embeddings.
-    
-    Args:
-        embeddings: Tensor of shape (n_samples, d_model)
-        random_state: Random seed for reproducibility
-        
-    Returns:
-        Tensor of shape (n_samples, 3) with 3D UMAP embeddings
-    """
+    """Fit UMAP on embeddings and return 3D reduced embeddings."""
     reducer = umap.UMAP(n_components=3, random_state=random_state)
-    umap_embeddings = reducer.fit_transform(
-        embeddings.to(torch.float32).cpu().numpy()
-    )
+    umap_embeddings = reducer.fit_transform(embeddings.to(torch.float32).cpu().numpy())
     return torch.tensor(umap_embeddings, dtype=torch.float32)
 
 
 def plot_umap_3d(
-    embedding_3d: torch.Tensor, 
-    title: str, 
-    labels: list[str],
-    palette: list[str] = None
+    embedding_3d: torch.Tensor, title: str, labels: list[str], palette: list[str] = None
 ) -> go.Figure:
-    """
-    Plot 3D UMAP embedding using Plotly, coloring by categorical label.
-    
-    Args:
-        embedding_3d: Tensor of shape (n_points, 3) with 3D coordinates
-        title: Plot title
-        labels: List of categorical labels for each point
-        palette: Optional color palette (defaults to plotly Light24)
-        
-    Returns:
-        Plotly Figure object
-    """
+    """Plot 3D UMAP embedding using Plotly, coloring by categorical label."""
     # Ensure data is NumPy for Plotly rendering
     coords = (
         embedding_3d.detach().cpu().numpy()
@@ -117,7 +92,9 @@ def plot_umap_3d(
                     opacity=0.7,
                     color=colors,
                 ),
-                text=[f"Genome {i}<br>Label: {labels[i]}" for i in range(coords.shape[0])],
+                text=[
+                    f"Genome {i}<br>Label: {labels[i]}" for i in range(coords.shape[0])
+                ],
                 hovertemplate="<b>%{text}</b><br>UMAP 1: %{x}<br>UMAP 2: %{y}<br>UMAP 3: %{z}<extra></extra>",
                 showlegend=False,
             )
@@ -160,11 +137,11 @@ def plot_distance_scatter(
     y_label: str,
     title: str,
     marker_size: int = 5,
-    marker_opacity: float = 0.3
+    marker_opacity: float = 0.3,
 ) -> go.Figure:
     """
     Create a scatter plot comparing two distance metrics.
-    
+
     Args:
         x: X-axis values (e.g., phylogenetic distances)
         y: Y-axis values (e.g., embedding distances)
@@ -173,7 +150,7 @@ def plot_distance_scatter(
         title: Plot title
         marker_size: Size of scatter points
         marker_opacity: Opacity of scatter points
-        
+
     Returns:
         Plotly Figure object
     """
@@ -182,7 +159,7 @@ def plot_distance_scatter(
         y=y,
         labels={"x": x_label, "y": y_label},
         title=title,
-        trendline_color_override="red"
+        trendline_color_override="red",
     )
     fig.update_traces(marker=dict(size=marker_size, opacity=marker_opacity))
     return fig
