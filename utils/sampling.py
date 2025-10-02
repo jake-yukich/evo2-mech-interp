@@ -1,5 +1,6 @@
 import random
 
+
 def overlaps(start: int, end: int, intervals: list[tuple[int, int]]) -> bool:
     """Helper, check if the interval (start, end) overlaps with any in intervals."""
     for used_start, used_end in intervals:
@@ -7,7 +8,8 @@ def overlaps(start: int, end: int, intervals: list[tuple[int, int]]) -> bool:
             return True
     return False
 
-# TODO: shrink this function 
+
+# TODO: shrink this function
 def sample_genome(
     text: str,
     sample_region_length: int,
@@ -42,12 +44,17 @@ def sample_genome(
     attempts = 0
 
     if coverage_fraction is not None:
-        print(f"Sampling to cover {target_coverage} bp ({coverage_fraction * 100:.1f}% of text)")
+        print(
+            f"Sampling to cover {target_coverage} bp ({coverage_fraction * 100:.1f}% of text)"
+        )
     else:
         print(f"Sampling {num_samples} regions of {sample_region_length} bp each")
 
     while covered_bp < target_coverage and attempts < max_attempts:
-        start_pos = random.randint(0, text_length - sample_region_length, )
+        start_pos = random.randint(
+            0,
+            text_length - sample_region_length,
+        )
         end_pos = start_pos + sample_region_length
 
         if not overlaps(start_pos, end_pos, used_intervals):
