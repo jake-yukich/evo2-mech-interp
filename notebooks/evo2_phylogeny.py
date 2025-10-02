@@ -5,6 +5,7 @@
 # %%
 import gc
 import os
+from pathlib import Path
 import sys
 import random
 
@@ -42,7 +43,7 @@ config = create_default_config(
         "https://huggingface.co/datasets/arcinstitute/opengenome2/resolve/main/json/midtraining_specific/gtdb_v220_stitched/data_gtdb_train_chunk11.jsonl.gz",
         "https://huggingface.co/datasets/arcinstitute/opengenome2/resolve/main/json/midtraining_specific/gtdb_v220_stitched/data_gtdb_train_chunk21.jsonl.gz",
     ],
-    num_species=5000,
+    num_species=2458,
     num_samples=None,
     coverage_fraction=0.05,
     region_length=4000,
@@ -76,32 +77,38 @@ assert os.getcwd().endswith("evo2-mech-interp/notebooks"), (
 # =============================================================================
 
 data_files = config.data_sources
-df = load_data_from_hf(data_files)
+
+# TODO: Switch to parquet at least, or ideally use something better like hf datasets
+if not Path(experiment_dir / "genomes_metadata.csv").exists():
+    df = load_data_from_hf(data_files)
 
 # %%
 # =============================================================================
 # PREPROCESSING
 # =============================================================================
+if not Path(experiment_dir / "genomes_metadata.csv").exists():
+    df = preprocess_gtdb_sequences(
+        df,
+        min_length=config.min_sequence_length,
+        subset=config.num_species,
+        random_seed=config.random_seed,
+        remove_tags=config.remove_tags,
+    )
+    df = add_gtdb_accession(df, get_tag_to_gtdb_accession_map())
+    df = df.dropna(subset=["gtdb_accession"]).reset_index(drop=True)
 
-df = preprocess_gtdb_sequences(
-    df,
-    min_length=config.min_sequence_length,
-    subset=config.num_species,
-    random_seed=config.random_seed,
-    remove_tags=config.remove_tags,
-)
-df = add_gtdb_accession(df, get_tag_to_gtdb_accession_map())
-df = df.dropna(subset=["gtdb_accession"]).reset_index(drop=True)
+    # Filter to only keep genomes that are in the phylogenetic tree
+    # This prevents wasting resources on genomes that will be dropped later
+    df = filter_genomes_in_tree(
+        df, config.gtdb_tree_path, accession_column="gtdb_accession"
+    )
 
-# Filter to only keep genomes that are in the phylogenetic tree
-# This prevents wasting resources on genomes that will be dropped later
-df = filter_genomes_in_tree(
-    df, config.gtdb_tree_path, accession_column="gtdb_accession"
-)
-
-# Save metadata to experiment directory
-df.to_csv(experiment_dir / "genomes_metadata.csv", index=False)
-print(f"Saved metadata for {len(df)} genomes")
+    # Save metadata to experiment directory
+    df.to_csv(experiment_dir / "genomes_metadata.csv", index=False)
+    print(f"Saved metadata for {len(df)} genomes")
+else:
+    df = pd.read_csv(experiment_dir / "genomes_metadata.csv")
+    print(f"Loaded metadata for {len(df)} genomes from cache")
 df.head()
 
 # %%
@@ -124,18 +131,25 @@ else:
     sampling_kwargs["coverage_fraction"] = config.coverage_fraction
     sampling_kwargs["num_samples"] = None
 
-for row in df.itertuples():
-    sampled_regions = sample_genome(row.sequence, **sampling_kwargs)
-    samples["genome_idx"].extend([row.Index] * len(sampled_regions))
-    samples["sample"].extend(sampled_regions)
-    if len(set(samples["genome_idx"])) >= config.num_species:
-        break
+if not Path(experiment_dir / "sampled_regions.csv").exists():
+    print("Sampling regions from genomes...")
+    for row in df.itertuples():
+        sampled_regions = sample_genome(row.sequence, **sampling_kwargs)
+        samples["genome_idx"].extend([row.Index] * len(sampled_regions))
+        samples["sample"].extend(sampled_regions)
+        if len(set(samples["genome_idx"])) >= config.num_species:
+            break
 
-samples_df = pd.DataFrame(samples)
-samples_df.to_csv(experiment_dir / "sampled_regions.csv", index=False)
-print(
-    f"Sampled {len(samples_df)} regions from {len(samples_df['genome_idx'].unique())} genomes"
-)
+    samples_df = pd.DataFrame(samples)
+    samples_df.to_csv(experiment_dir / "sampled_regions.csv", index=False)
+    print(
+        f"Sampled {len(samples_df)} regions from {len(samples_df['genome_idx'].unique())} genomes"
+    )
+else:
+    samples_df = pd.read_csv(experiment_dir / "sampled_regions.csv")
+    print(
+        f"Loaded {len(samples_df)} sampled regions from {len(samples_df['genome_idx'].unique())} genomes from cache"
+    )
 samples_df.head()
 
 # %%
@@ -236,10 +250,13 @@ for category in ["class", "order", "family"]:
 # =============================================================================
 
 print("Computing phylogenetic distance matrix...")
-phylo_distance_matrix = mp_phylogenetic_distance_matrix(
-    df["gtdb_accession"].tolist(), config.gtdb_tree_path
-)
-torch.save(phylo_distance_matrix, experiment_dir / "phylogenetic_distance_matrix.pt")
+if not Path(experiment_dir / "phylogenetic_distance_matrix.pt").exists():
+    phylo_distance_matrix = mp_phylogenetic_distance_matrix(
+        df["gtdb_accession"].tolist(), config.gtdb_tree_path
+    )
+    torch.save(phylo_distance_matrix, experiment_dir / "phylogenetic_distance_matrix.pt")
+else:
+    phylo_distance_matrix = torch.load(experiment_dir / "phylogenetic_distance_matrix.pt")
 print(f"Phylogenetic distance matrix shape: {phylo_distance_matrix.shape}")
 
 # %%
@@ -266,30 +283,35 @@ print(f"Cosine similarity matrix shape: {cos_similarity_matrix.shape}")
 n = cos_similarity_matrix.shape[0]
 tril_indices = np.tril_indices(n, k=-1)
 
-# Plot cosine similarity vs phylogenetic distance
+# Convert cosine similarity to distance for clearer interpretation
+cos_distance_matrix = 1 - cos_similarity_matrix
+
+# Plot cosine distance vs phylogenetic distance with Chatterjee and Spearman
 fig_cosine = plot_distance_scatter(
     x=phylo_distance_matrix[tril_indices].to(torch.float32).cpu().numpy(),
-    y=cos_similarity_matrix[tril_indices].to(torch.float32).cpu().numpy(),
+    y=cos_distance_matrix[tril_indices].to(torch.float32).cpu().numpy(),
     x_label="Phylogenetic Distance",
-    y_label="Cosine Similarity",
-    title="Cosine Similarity vs Phylogenetic Distance",
+    y_label="Cosine Distance",
+    title="Cosine Distance vs Phylogenetic Distance",
+    include_correlations=['chatterjee', 'spearman'],
 )
-fig_cosine.show()
+# fig_cosine.show()
 
-# Save cosine similarity plot
+# Save cosine distance plot
 filepath = experiment_dir / "distance_cosine_vs_phylogenetic"
 saved_formats = save_plotly_figure(fig_cosine, filepath, formats=["html", "png"])
-print(f"Saved cosine similarity plot: {', '.join(saved_formats)}")
+print(f"Saved cosine distance plot: {', '.join(saved_formats)}")
 
-# Plot geodesic distance vs phylogenetic distance
+# Plot geodesic distance vs phylogenetic distance with Pearson
 fig_geodesic = plot_distance_scatter(
     x=phylo_distance_matrix[tril_indices].to(torch.float32).cpu().numpy(),
     y=geo_distance_matrix[tril_indices],
     x_label="Phylogenetic Distance",
     y_label="Geodesic Distance",
     title="Geodesic Distance vs Phylogenetic Distance",
+    include_correlations=['pearson'],
 )
-fig_geodesic.show()
+# fig_geodesic.show()
 
 # Save geodesic distance plot
 filepath = experiment_dir / "distance_geodesic_vs_phylogenetic"

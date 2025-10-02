@@ -4,6 +4,46 @@ import umap
 import plotly.express as px
 import plotly.graph_objects as go
 from pathlib import Path
+from scipy.stats import pearsonr, spearmanr
+
+
+def chatterjee_correlation(x: np.ndarray, y: np.ndarray) -> float:
+    """
+    Compute Chatterjee's correlation coefficient.
+    
+    A non-parametric measure of dependence that can detect non-monotonic relationships.
+    Returns a value between 0 and 1, where 0 means independence and 1 means perfect dependence.
+    
+    Reference: Chatterjee, S. (2021). A new coefficient of correlation. JASA.
+    
+    Args:
+        x: Array of x values
+        y: Array of y values
+        
+    Returns:
+        Chatterjee's xi coefficient (between 0 and 1)
+    """
+    n = len(x)
+    if n <= 1:
+        return 0.0
+    
+    # Sort by x
+    order = np.argsort(x)
+    y_sorted = y[order]
+    
+    # Compute ranks of y values in sorted order
+    ranks = np.empty(n, dtype=int)
+    ranks[np.argsort(y_sorted)] = np.arange(n)
+    
+    # Compute the statistic
+    numerator = np.sum(np.abs(np.diff(ranks)))
+    denominator = 2 * np.sum(ranks * (n - ranks))
+    
+    if denominator == 0:
+        return 0.0
+    
+    xi_n = 1 - (n * numerator) / (2 * denominator)
+    return xi_n
 
 
 def save_plotly_figure(fig: go.Figure, filepath: Path, formats: list[str] = ["html", "png"]):
@@ -43,6 +83,7 @@ def save_plotly_figure(fig: go.Figure, filepath: Path, formats: list[str] = ["ht
         except Exception as e:
             if "kaleido" in str(e).lower() or "image export" in str(e).lower():
                 print(f"Warning: Cannot save as {fmt} (kaleido not installed). Install with: pip install kaleido")
+                raise e
             else:
                 print(f"Warning: Failed to save as {fmt}: {e}")
     
@@ -138,10 +179,11 @@ def plot_distance_scatter(
     title: str,
     marker_size: int = 5,
     marker_opacity: float = 0.3,
+    include_correlations: list[str] = None,
 ) -> go.Figure:
     """
     Create a scatter plot comparing two distance metrics.
-
+    
     Args:
         x: X-axis values (e.g., phylogenetic distances)
         y: Y-axis values (e.g., embedding distances)
@@ -150,16 +192,45 @@ def plot_distance_scatter(
         title: Plot title
         marker_size: Size of scatter points
         marker_opacity: Opacity of scatter points
-
+        include_correlations: List of correlation types to compute and display.
+                            Options: ['pearson', 'spearman', 'chatterjee']
+                            If None, no correlations are computed.
+        
     Returns:
         Plotly Figure object
     """
+    # Compute correlation metrics if requested
+    title_with_metrics = title
+    if include_correlations:
+        metrics = []
+        
+        # Remove any NaN or infinite values
+        mask = np.isfinite(x) & np.isfinite(y)
+        x_clean = np.array(x)[mask]
+        y_clean = np.array(y)[mask]
+        
+        if len(x_clean) > 0:
+            if 'pearson' in include_correlations:
+                r_pearson, p_pearson = pearsonr(x_clean, y_clean)
+                metrics.append(f"Pearson r={r_pearson:.3f}")
+            
+            if 'spearman' in include_correlations:
+                r_spearman, p_spearman = spearmanr(x_clean, y_clean)
+                metrics.append(f"Spearman ρ={r_spearman:.3f}")
+            
+            if 'chatterjee' in include_correlations:
+                xi = chatterjee_correlation(x_clean, y_clean)
+                metrics.append(f"Chatterjee ξ={xi:.3f}")
+        
+        if metrics:
+            title_with_metrics = f"{title}<br><sub>{' | '.join(metrics)}</sub>"
+    
     fig = px.scatter(
         x=x,
         y=y,
         labels={"x": x_label, "y": y_label},
-        title=title,
-        trendline_color_override="red",
+        title=title_with_metrics,
+        trendline_color_override="red"
     )
     fig.update_traces(marker=dict(size=marker_size, opacity=marker_opacity))
     return fig
