@@ -29,6 +29,16 @@ from evo2 import Evo2
 from tqdm import tqdm
 import pandas as pd
 
+# Ensure Triton can locate ptxas to avoid NoneType path errors in triton compiler
+try:
+    _ptxas_path = "/opt/conda/envs/evo2/bin/ptxas"
+    if os.path.isfile(_ptxas_path):
+        os.environ.setdefault("TRITON_PTXAS_PATH", _ptxas_path)
+except Exception:
+    pass
+
+
+
 # %%
 # =============================================================================
 # EXPERIMENT CONFIGURATION
@@ -42,7 +52,8 @@ config = create_default_config(
         "https://huggingface.co/datasets/arcinstitute/opengenome2/resolve/main/json/midtraining_specific/gtdb_v220_stitched/data_gtdb_train_chunk11.jsonl.gz",
         "https://huggingface.co/datasets/arcinstitute/opengenome2/resolve/main/json/midtraining_specific/gtdb_v220_stitched/data_gtdb_train_chunk21.jsonl.gz",
     ],
-    num_species=5000,
+    batch_size=32,
+    num_species=7500,
     num_samples=None,
     coverage_fraction=0.05,
     region_length=4000,
