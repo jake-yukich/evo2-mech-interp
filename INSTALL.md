@@ -1,5 +1,5 @@
 ```
-conda env create -f environment.yaml  
+conda env create -f environment.yaml # pip will fail
 conda activate evo2
 
 conda install -c nvidia cuda-nvcc cuda-cudart-dev
@@ -19,6 +19,7 @@ ete3
 datasets
 biopython
 umap
+matplotlib
 ```
 
 setup root `data/gtdb/` directory, add the metadata and tree files from GTDB
