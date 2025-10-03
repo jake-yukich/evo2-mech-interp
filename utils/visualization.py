@@ -94,9 +94,19 @@ def save_plotly_figure(
     return saved_formats
 
 
-def umap_reduce_3d(embeddings: torch.Tensor, random_state: int = 42) -> torch.Tensor:
+def umap_reduce_3d(
+        embeddings: torch.Tensor, 
+        n_neighbors: int = 15,
+        min_dist: float = 0.1,
+        metric: str = 'euclidean',
+        random_state: int = 42) -> torch.Tensor:
     """Fit UMAP on embeddings and return 3D reduced embeddings."""
-    reducer = umap.UMAP(n_components=3, random_state=random_state)
+    reducer = umap.UMAP(
+        n_components=3, 
+        n_neighbors=n_neighbors,
+        min_dist=min_dist,
+        metric=metric,
+        random_state=random_state)
     umap_embeddings = reducer.fit_transform(embeddings.to(torch.float32).cpu().numpy())
     return torch.tensor(umap_embeddings, dtype=torch.float32)
 
@@ -117,7 +127,7 @@ def plot_umap_3d(
     # Map labels to colors (cycle palette if needed)
     unique_labels = sorted(set(labels))
     if palette is None:
-        palette = px.colors.qualitative.Light24
+        palette = px.colors.qualitative.Set3
     if len(unique_labels) > len(palette):
         repeats = (len(unique_labels) // len(palette)) + 1
         palette = (palette * repeats)[: len(unique_labels)]

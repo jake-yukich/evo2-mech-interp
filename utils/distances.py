@@ -1,3 +1,4 @@
+from pathlib import Path
 import torch
 import numpy as np
 import plotly.graph_objects as go
@@ -7,6 +8,7 @@ from jaxtyping import Float
 from torch import Tensor
 from ete3 import Tree
 from multiprocessing import Pool
+from visualization import save_plotly_figure
 
 from tqdm import tqdm
 
@@ -295,4 +297,6 @@ if __name__ == "__main__":
         title=f"Geodesic on Noisy Sphere (k={k})<br>Distance: {dist_euc:.2f}",
     )
     fig.show()
+    filepath =  Path("geodesic_noisy_sphere")
+    save_plotly_figure(fig, filepath, formats=["html", "png"])
     # %%

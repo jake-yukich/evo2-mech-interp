@@ -1,6 +1,6 @@
 # %%
-# %load_ext autoreload
-# %autoreload 2
+%load_ext autoreload
+%autoreload 2
 
 # %%
 import gc
@@ -160,6 +160,241 @@ else:
     )
 samples_df.head()
 
+
+# %%
+# =============================================================================
+# PHYLOGENETIC TREE VISUALIZATIONS (DENDROGRAMS)
+# =============================================================================
+
+# import matplotlib
+# matplotlib.use('Agg')  # Use non-interactive backend
+# import matplotlib.pyplot as plt
+# from scipy.cluster.hierarchy import dendrogram, linkage
+# from scipy.spatial.distance import squareform
+# from utils.phylogenetics import get_tree
+
+# print("Loading full phylogenetic tree...")
+# full_tree = get_tree(config.gtdb_tree_path)
+# full_tree_leaves = set(full_tree.get_leaf_names())
+# print(f"Full tree has {len(full_tree_leaves)} leaves")
+
+# # Get our dataset's accession IDs
+# our_accessions = set(df["gtdb_accession"].tolist())
+# print(f"Our dataset has {len(our_accessions)} species")
+
+# # Create a subtree containing only our species
+# print("Pruning tree to our species...")
+# our_tree = full_tree.copy()
+# our_tree.prune(our_accessions, preserve_branch_length=True)
+# print(f"Our tree has {len(our_tree.get_leaves())} leaves")
+
+# # %%
+# # =============================================================================
+# # PLOT 1: FULL PHYLOGENETIC TREE (DENDROGRAM)
+# # =============================================================================
+
+# print("Creating dendrogram for full tree (sampled for visualization)...")
+
+# # Sample the full tree for visualization (too big to show all)
+# sample_size = min(1000, len(full_tree_leaves))
+# sampled_leaves = list(full_tree_leaves)[:sample_size]
+
+# # Get phylogenetic distance matrix for sampled leaves
+# from utils.distances import mp_phylogenetic_distance_matrix
+# sampled_phylo_matrix = mp_phylogenetic_distance_matrix(sampled_leaves, config.gtdb_tree_path)
+# # %%
+# # Convert to condensed distance matrix and then create linkage
+# condensed_dist = squareform(sampled_phylo_matrix.cpu().numpy())
+# linkage_matrix = linkage(condensed_dist, method='average')
+
+# # Create dendrogram
+# fig, ax = plt.subplots(figsize=(16, 8))
+# dendrogram(
+#     linkage_matrix,
+#     ax=ax,
+#     no_labels=True,  # Too many leaves to show labels
+#     color_threshold=0,
+#     above_threshold_color='#2b5d87'
+# )
+# ax.set_title(f'Full Phylogenetic Tree Dendrogram (sampled {sample_size}/{len(full_tree_leaves)} species)', fontsize=14)
+# ax.set_xlabel('Species Index')
+# ax.set_ylabel('Phylogenetic Distance')
+# plt.tight_layout()
+
+# full_tree_path = experiment_dir / "phylo_tree_full_dendrogram.png"
+# plt.savefig(full_tree_path, dpi=150, bbox_inches='tight')
+# plt.close()
+# print(f"Saved full tree dendrogram to {full_tree_path}")
+
+# # %%
+# # =============================================================================
+# # PLOT 2: OUR DATASET'S TREE (DENDROGRAM)
+# # =============================================================================
+
+# print("Creating dendrogram for our dataset's tree...")
+
+# # Compute phylogenetic distance matrix for our dataset
+# our_phylo_distances = mp_phylogenetic_distance_matrix(
+#     list(our_accessions), 
+#     config.gtdb_tree_path
+# )
+
+# # Convert to condensed distance matrix and create linkage
+# our_condensed_dist = squareform(our_phylo_distances.cpu().numpy())
+# our_linkage_matrix = linkage(our_condensed_dist, method='average')
+
+# # Create dendrogram
+# fig, ax = plt.subplots(figsize=(16, 10))
+# dend = dendrogram(
+#     our_linkage_matrix,
+#     ax=ax,
+#     no_labels=True,
+#     color_threshold=0,
+#     above_threshold_color='#c94d4d'
+# )
+# ax.set_title(f'Our Dataset Phylogenetic Tree Dendrogram ({len(our_accessions)} species)', fontsize=14)
+# ax.set_xlabel('Species Index')
+# ax.set_ylabel('Phylogenetic Distance')
+# plt.tight_layout()
+
+# our_tree_path = experiment_dir / "phylo_tree_our_dataset_dendrogram.png"
+# plt.savefig(our_tree_path, dpi=150, bbox_inches='tight')
+# plt.close()
+# print(f"Saved our tree dendrogram to {our_tree_path}")
+
+# # %%
+# # =============================================================================
+# # PLOT 3: OVERLAY - OUR TREE HIGHLIGHTED IN FULL TREE CONTEXT
+# # =============================================================================
+
+# print("Creating true overlay dendrogram with our dataset highlighted in full tree context...")
+
+# # Strategy: Create a combined tree with both our species and a sample of background species
+# # Sample background species that are NOT in our dataset
+# background_sample_size = min(1000, len(full_tree_leaves) - len(our_accessions))
+# background_species = list(full_tree_leaves - our_accessions)[:background_sample_size]
+
+# # Combine our species with background sample
+# combined_species = list(our_accessions) + background_species
+# print(f"Creating combined tree with {len(our_accessions)} dataset species + {len(background_species)} background species")
+
+# # Compute phylogenetic distance matrix for combined set
+# print("Computing phylogenetic distances for combined tree...")
+# combined_phylo_matrix = mp_phylogenetic_distance_matrix(combined_species, config.gtdb_tree_path)
+
+# # Create linkage matrix
+# combined_condensed_dist = squareform(combined_phylo_matrix.cpu().numpy())
+# combined_linkage_matrix = linkage(combined_condensed_dist, method='average')
+
+# # Create a mapping to track which leaves are in our dataset
+# our_species_indices = set(range(len(our_accessions)))  # First N species are ours
+
+# # Custom color function for dendrogram links
+# def get_link_color_overlay(k):
+#     """Color links based on whether they lead to our dataset species."""
+#     # This is called for each link in the dendrogram
+#     # We'll use a default that gets overridden by link_color_palette
+#     return '#d0d0d0'
+
+# # Plot the dendrogram
+# fig, ax = plt.subplots(figsize=(30, 10))
+
+# # First pass: get dendrogram structure
+# dend_result = dendrogram(
+#     combined_linkage_matrix,
+#     no_labels=True,
+#     no_plot=True
+# )
+
+# # Analyze which links connect to our species
+# # The dendrogram result gives us 'icoord', 'dcoord', and 'leaves'
+# leaves = dend_result['leaves']
+# icoord = dend_result['icoord']
+# dcoord = dend_result['dcoord']
+
+# # Determine which links should be red (contain our species) vs grey (background only)
+# link_colors = []
+# for i, (xi, yi) in enumerate(zip(icoord, dcoord)):
+#     # Each link connects 4 points: [x1, x2, x3, x4] and [y1, y2, y3, y4]
+#     # The bottom two points (x1, x4) correspond to the child nodes
+#     # Check if any leaves under this link are in our dataset
+    
+#     # Get the x-coordinates range for this link
+#     x_min = min(xi)
+#     x_max = max(xi)
+    
+#     # Find which leaves fall within this x-range
+#     # Leaves are positioned at 5, 15, 25, ... (every 10 units)
+#     leaf_start_idx = int(x_min / 10)
+#     leaf_end_idx = int(x_max / 10)
+    
+#     # Check if any of these leaves are in our dataset
+#     has_our_species = False
+#     for leaf_idx in range(leaf_start_idx, leaf_end_idx + 1):
+#         if leaf_idx < len(leaves):
+#             original_idx = leaves[leaf_idx]
+#             if original_idx in our_species_indices:
+#                 has_our_species = True
+#                 break
+    
+#     link_colors.append('#c94d4d' if has_our_species else "#6a6a6a")  # Lighter grey for background
+
+# # Now manually draw the dendrogram with custom styling for better visibility
+# # Draw background branches first (thin, light)
+# for i, (xi, yi) in enumerate(zip(icoord, dcoord)):
+#     if link_colors[i] == '#6a6a6a':  # Background branch
+#         ax.plot(xi, yi, color='#6a6a6a', linewidth=0.3, alpha=0.4, zorder=1)
+
+# # Then draw our dataset branches on top (thicker, bold)
+# for i, (xi, yi) in enumerate(zip(icoord, dcoord)):
+#     if link_colors[i] == '#c94d4d':  # Our dataset branch
+#         ax.plot(xi, yi, color='#c94d4d', linewidth=0.5, alpha=0.7, zorder=2)
+
+# # Set axis properties to match dendrogram style
+# ax.set_xlim(min(min(x) for x in icoord) - 10, max(max(x) for x in icoord) + 10)
+# ax.set_ylim(0, max(max(y) for y in dcoord) * 1.05)
+# ax.spines['top'].set_visible(False)
+# ax.spines['right'].set_visible(False)
+# ax.spines['bottom'].set_visible(False)
+# ax.tick_params(axis='x', which='both', bottom=False, top=False, labelbottom=False)
+
+# coverage_pct = len(our_accessions) / len(full_tree_leaves) * 100
+# ax.set_title(
+#     f'Phylogenetic Tree Overlay: Our Dataset (red, {len(our_accessions)} species) in Full Tree Context (grey, {len(background_species)} sampled)',
+#     fontsize=14, fontweight='bold'
+# )
+# ax.set_xlabel('Species Index', fontsize=12)
+# ax.set_ylabel('Phylogenetic Distance', fontsize=12)
+
+# # Add legend
+# from matplotlib.patches import Patch
+# legend_elements = [
+#     Patch(facecolor='#c94d4d', label=f'Branches with our species ({len(our_accessions)} total)'),
+#     Patch(facecolor='#6a6a6a', label=f'Background branches (sampled {len(background_species)})'),
+# ]
+# ax.legend(handles=legend_elements, loc='upper right', fontsize=11)
+
+# # Add coverage text
+# ax.text(0.02, 0.98, 
+#         f'Coverage: {coverage_pct:.2f}% of full GTDB tree\n({len(our_accessions):,} / {len(full_tree_leaves):,} species)',
+#         transform=ax.transAxes, fontsize=10, verticalalignment='top',
+#         bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+
+# plt.tight_layout()
+# overlay_path = experiment_dir / "phylo_tree_overlay_dendrogram.png"
+# plt.savefig(overlay_path, dpi=150, bbox_inches='tight')
+# plt.close()
+# print(f"Saved overlay dendrogram to {overlay_path}")
+
+# print("\nTree coverage summary:")
+# print(f"  Full tree: {len(full_tree_leaves):,} species")
+# print(f"  Our dataset: {len(our_accessions):,} species")
+# print(f"  Background sample: {len(background_species):,} species")
+# print(f"  Combined visualization: {len(combined_species):,} species")
+# print(f"  Coverage: {coverage_pct:.2f}%")
+
+
+
 # %%
 # =============================================================================
 # MODEL LOADING
@@ -211,7 +446,12 @@ print(f"Final embeddings shape: {mean_embeddings.shape}")
 # DIMENSIONALITY REDUCTION
 # =============================================================================
 
-embedding_3d = umap_reduce_3d(mean_embeddings, random_state=config.random_seed)
+embedding_3d = umap_reduce_3d(
+    mean_embeddings, 
+    n_neighbors=50,
+    min_dist=0.3,
+    random_state=config.random_seed
+)
 print(f"UMAP embeddings shape: {embedding_3d.shape}")
 
 # %%
@@ -219,14 +459,17 @@ print(f"UMAP embeddings shape: {embedding_3d.shape}")
 # VISUALIZATION: 3D UMAP BY TAXONOMY
 # =============================================================================
 
+# disable kaleido logging
+import logging
+logging.getLogger('kaleido').setLevel(logging.ERROR)
 for category in ["class", "order", "family"]:
     # Render ALL points; map rare categories to "Other" for readability
     labels_series = df[category].fillna("Unknown").replace("NONE", "Unknown")
     value_counts = labels_series.value_counts()
-    min_count = max(2, int(0.02 * len(labels_series)))  # at least 2, or 2%
+    min_count = 10  # at least 10, or 2%
     frequent = set(value_counts[value_counts >= min_count].index)
     if len(frequent) == 0 and len(value_counts) > 0:
-        frequent = set(value_counts.head(min(10, len(value_counts))).index)
+        frequent = set(value_counts.head(min(200, len(value_counts))).index)
 
     # Align labels with embedding points
     n_points = embedding_3d.shape[0]
@@ -295,24 +538,22 @@ print(f"Cosine similarity matrix shape: {cos_similarity_matrix.shape}")
 n = cos_similarity_matrix.shape[0]
 tril_indices = np.tril_indices(n, k=-1)
 
-# Convert cosine similarity to distance for clearer interpretation
-cos_distance_matrix = 1 - cos_similarity_matrix
 
 # Plot cosine distance vs phylogenetic distance with Chatterjee and Spearman
 fig_cosine = plot_distance_scatter(
     x=phylo_distance_matrix[tril_indices].to(torch.float32).cpu().numpy(),
-    y=cos_distance_matrix[tril_indices].to(torch.float32).cpu().numpy(),
+    y=cos_similarity_matrix[tril_indices].to(torch.float32).cpu().numpy(),
     x_label="Phylogenetic Distance",
-    y_label="Cosine Distance",
-    title="Cosine Distance vs Phylogenetic Distance",
+    y_label="Cosine Similarity",
+    title="Cosine Similarity vs Phylogenetic Distance",
     include_correlations=["chatterjee", "spearman"],
 )
 # fig_cosine.show()
 
-# Save cosine distance plot
-filepath = experiment_dir / "distance_cosine_vs_phylogenetic"
+# Save cosine similarity plot
+filepath = experiment_dir / "similarity_cosine_vs_phylogenetic"
 saved_formats = save_plotly_figure(fig_cosine, filepath, formats=["html", "png"])
-print(f"Saved cosine distance plot: {', '.join(saved_formats)}")
+print(f"Saved cosine similarity plot: {', '.join(saved_formats)}")
 
 # Plot geodesic distance vs phylogenetic distance with Pearson
 fig_geodesic = plot_distance_scatter(
@@ -407,7 +648,8 @@ print(f"Flat subspace embeddings shape: {flat_subspace_embeddings.shape}")
 
 # Reduce to 3D using UMAP
 flat_embedding_3d = umap_reduce_3d(
-    flat_subspace_embeddings, random_state=config.random_seed
+    flat_subspace_embeddings, random_state=config.random_seed, n_neighbors=50,
+    min_dist=0.3,
 )
 print(f"Flat subspace UMAP embeddings shape: {flat_embedding_3d.shape}")
 
@@ -442,7 +684,7 @@ for category in ["family", "class", "order"]:
         title=f"3D UMAP of Flat Subspace Colored by {category.capitalize()}",
         labels=labels_for_plot,
     )
-    # fig.show()
+    fig.show()
 
     # Save to HTML and PNG
     filepath = experiment_dir / f"flat_subspace_umap_3d_{category}"
