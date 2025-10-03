@@ -1,6 +1,6 @@
 # %%
-%load_ext autoreload
-%autoreload 2
+# %load_ext autoreload
+# %autoreload 2
 
 # %%
 import gc
@@ -22,13 +22,21 @@ from utils.data import load_data_from_hf, preprocess_gtdb_sequences, add_gtdb_ac
 from utils.phylogenetics import get_tag_to_gtdb_accession_map, filter_genomes_in_tree
 from utils.sampling import sample_genome
 from utils.inference import get_mean_embeddings, batch_tokenize
-from utils.visualization import umap_reduce_3d, plot_umap_3d, plot_distance_scatter, save_plotly_figure
+from utils.visualization import (
+    umap_reduce_3d,
+    plot_umap_3d,
+    plot_distance_scatter,
+    save_plotly_figure,
+)
 
 import numpy as np
 import torch
 from evo2 import Evo2
 from tqdm import tqdm
 import pandas as pd
+import wandb
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # %%
 # =============================================================================
@@ -215,7 +223,7 @@ for category in ["class", "order", "family"]:
     # Render ALL points; map rare categories to "Other" for readability
     labels_series = df[category].fillna("Unknown").replace("NONE", "Unknown")
     value_counts = labels_series.value_counts()
-    min_count = max(2, int(0.05 * len(labels_series)))  # at least 2, or 5%
+    min_count = max(2, int(0.02 * len(labels_series)))  # at least 2, or 2%
     frequent = set(value_counts[value_counts >= min_count].index)
     if len(frequent) == 0 and len(value_counts) > 0:
         frequent = set(value_counts.head(min(10, len(value_counts))).index)
@@ -238,7 +246,7 @@ for category in ["class", "order", "family"]:
         labels=labels_for_plot,
     )
     fig.show()
-    
+
     # Save to HTML and PNG
     filepath = experiment_dir / f"umap_3d_{category}"
     saved_formats = save_plotly_figure(fig, filepath, formats=["html", "png"])
@@ -254,9 +262,13 @@ if not Path(experiment_dir / "phylogenetic_distance_matrix.pt").exists():
     phylo_distance_matrix = mp_phylogenetic_distance_matrix(
         df["gtdb_accession"].tolist(), config.gtdb_tree_path
     )
-    torch.save(phylo_distance_matrix, experiment_dir / "phylogenetic_distance_matrix.pt")
+    torch.save(
+        phylo_distance_matrix, experiment_dir / "phylogenetic_distance_matrix.pt"
+    )
 else:
-    phylo_distance_matrix = torch.load(experiment_dir / "phylogenetic_distance_matrix.pt")
+    phylo_distance_matrix = torch.load(
+        experiment_dir / "phylogenetic_distance_matrix.pt"
+    )
 print(f"Phylogenetic distance matrix shape: {phylo_distance_matrix.shape}")
 
 # %%
@@ -293,7 +305,7 @@ fig_cosine = plot_distance_scatter(
     x_label="Phylogenetic Distance",
     y_label="Cosine Distance",
     title="Cosine Distance vs Phylogenetic Distance",
-    include_correlations=['chatterjee', 'spearman'],
+    include_correlations=["chatterjee", "spearman"],
 )
 # fig_cosine.show()
 
@@ -309,7 +321,7 @@ fig_geodesic = plot_distance_scatter(
     x_label="Phylogenetic Distance",
     y_label="Geodesic Distance",
     title="Geodesic Distance vs Phylogenetic Distance",
-    include_correlations=['pearson'],
+    include_correlations=["pearson"],
 )
 # fig_geodesic.show()
 
@@ -317,5 +329,153 @@ fig_geodesic = plot_distance_scatter(
 filepath = experiment_dir / "distance_geodesic_vs_phylogenetic"
 saved_formats = save_plotly_figure(fig_geodesic, filepath, formats=["html", "png"])
 print(f"Saved geodesic distance plot: {', '.join(saved_formats)}")
+
+# %%
+from utils.subspace import FlatSubspace, FlatSubspaceLoss
+
+# Initialize wandb
+wandb.init(
+    project="evo2-mech-interp",
+    name="flat_subspace_training_vectorised",
+    config={
+        "input_dim": config.d_model,
+        "output_dim": 10,
+        "alpha": 0.2,
+        "lr": 1e-3,
+        "n_epochs": 100,
+        "n_genomes": mean_embeddings.shape[0],
+    },
+)
+
+model = FlatSubspace(config.d_model, 10).to(device)
+loss_fn = FlatSubspaceLoss(alpha=0.2)
+optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+
+# Move data to device once
+mean_embeddings = mean_embeddings.to(device).to(torch.float32)
+phylo_distance_matrix = phylo_distance_matrix.to(device).to(torch.float32)
+
+for epoch in range(100):
+    model.train()
+    optimizer.zero_grad()
+
+    # Forward pass: compute all pairwise distances at once
+    d_pred_matrix = model(mean_embeddings)  # (2400, 2400)
+
+    # Reconstruction
+    z = model.encode(mean_embeddings)
+    x_recon = model.decode(z)
+
+    # Compute loss
+    total_loss, distance_loss, recon_loss = loss_fn(
+        d_pred_matrix, phylo_distance_matrix, x_recon, mean_embeddings
+    )
+
+    # Backward pass
+    total_loss.backward()
+    optimizer.step()
+
+    # Logging
+    print(
+        f"Epoch {epoch + 1}/100, Loss: {total_loss.item():.4f}, "
+        f"Distance: {distance_loss.item():.4f}, Recon: {recon_loss.item():.4f}"
+    )
+
+    wandb.log(
+        {
+            "epoch": epoch,
+            "total_loss": total_loss.item(),
+            "distance_loss": distance_loss.item(),
+            "reconstruction_loss": recon_loss.item(),
+            "beta": model.beta.item(),
+        }
+    )
+
+wandb.finish()
+
+# %%
+# =============================================================================
+# FLAT SUBSPACE UMAP VISUALIZATION
+# =============================================================================
+
+# Extract embeddings from the trained flat subspace
+model.eval()
+with torch.no_grad():
+    flat_subspace_embeddings = model.encode(mean_embeddings).cpu()
+
+print(f"Flat subspace embeddings shape: {flat_subspace_embeddings.shape}")
+
+# Reduce to 3D using UMAP
+flat_embedding_3d = umap_reduce_3d(
+    flat_subspace_embeddings, random_state=config.random_seed
+)
+print(f"Flat subspace UMAP embeddings shape: {flat_embedding_3d.shape}")
+
+# %%
+# =============================================================================
+# VISUALIZATION: 3D UMAP OF FLAT SUBSPACE BY TAXONOMY
+# =============================================================================
+
+for category in ["family", "class", "order"]:
+    # Render ALL points; map rare categories to "Other" for readability
+    labels_series = df[category].fillna("Unknown").replace("NONE", "Unknown")
+    value_counts = labels_series.value_counts()
+    min_count = max(2, int(0.02 * len(labels_series)))  # at least 2, or 2%
+    frequent = set(value_counts[value_counts >= min_count].index)
+    if len(frequent) == 0 and len(value_counts) > 0:
+        frequent = set(value_counts.head(min(10, len(value_counts))).index)
+
+    # Align labels with embedding points
+    n_points = flat_embedding_3d.shape[0]
+    labels_list = [
+        lbl if lbl in frequent else "Other" for lbl in labels_series.tolist()
+    ]
+    if len(labels_list) > n_points:
+        labels_for_plot = labels_list[:n_points]
+    elif len(labels_list) < n_points:
+        labels_for_plot = labels_list + ["Other"] * (n_points - len(labels_list))
+    else:
+        labels_for_plot = labels_list
+
+    fig = plot_umap_3d(
+        flat_embedding_3d,
+        title=f"3D UMAP of Flat Subspace Colored by {category.capitalize()}",
+        labels=labels_for_plot,
+    )
+    # fig.show()
+
+    # Save to HTML and PNG
+    filepath = experiment_dir / f"flat_subspace_umap_3d_{category}"
+    saved_formats = save_plotly_figure(fig, filepath, formats=["html", "png"])
+    print(f"Saved flat subspace {category} visualization: {', '.join(saved_formats)}")
+
+# %%
+# =============================================================================
+# FLAT SUBSPACE ANGULAR DISTANCE VS PHYLOGENETIC DISTANCE
+# =============================================================================
+
+print("Computing angular distances in flat subspace...")
+model.eval()
+with torch.no_grad():
+    # Compute the full angular distance matrix using the trained model
+    angular_distance_matrix = model(mean_embeddings).cpu()
+
+print(f"Angular distance matrix shape: {angular_distance_matrix.shape}")
+
+# Plot angular distance vs phylogenetic distance
+fig_angular = plot_distance_scatter(
+    x=phylo_distance_matrix[tril_indices].to(torch.float32).cpu().numpy(),
+    y=angular_distance_matrix[tril_indices].to(torch.float32).cpu().numpy(),
+    x_label="Phylogenetic Distance",
+    y_label="Angular Distance (Flat Subspace)",
+    title="Angular Distance in Flat Subspace vs Phylogenetic Distance",
+    include_correlations=["pearson", "spearman", "chatterjee"],
+)
+# fig_angular.show()
+
+# Save angular distance plot
+filepath = experiment_dir / "distance_angular_vs_phylogenetic"
+saved_formats = save_plotly_figure(fig_angular, filepath, formats=["html", "png"])
+print(f"Saved angular distance plot: {', '.join(saved_formats)}")
 
 # %%

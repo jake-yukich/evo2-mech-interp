@@ -132,13 +132,13 @@ def phylogenetic_distance_matrix(accession_ids: list[str], tree: Tree) -> torch.
 def _compute_distance_chunk_cached(args):
     """Worker function with cached node lookups."""
     row_indices, accession_ids, tree_path = args
-    
+
     tree = Tree(tree_path, format=1, quoted_node_names=True)
-    
+
     # Cache all node lookups and root distances once per worker
     node_cache = {}
     root_dist_cache = {}
-    
+
     for acc_id in accession_ids:
         try:
             nodes = tree.search_nodes(name=acc_id)
@@ -149,25 +149,27 @@ def _compute_distance_chunk_cached(args):
                 node_cache[acc_id] = None
         except:
             node_cache[acc_id] = None
-    
+
     results = []
     for i in row_indices:
         for j in range(i + 1, len(accession_ids)):
             node_i = node_cache.get(accession_ids[i])
             node_j = node_cache.get(accession_ids[j])
-            
+
             if node_i is None or node_j is None:
-                dist = float('nan')
+                dist = float("nan")
             else:
                 # Get LCA and calculate distance via root
                 lca = tree.get_common_ancestor([node_i, node_j])
                 lca_dist = lca.get_distance(tree)
-                dist = (root_dist_cache[accession_ids[i]] + 
-                        root_dist_cache[accession_ids[j]] - 
-                        2 * lca_dist)
-            
+                dist = (
+                    root_dist_cache[accession_ids[i]]
+                    + root_dist_cache[accession_ids[j]]
+                    - 2 * lca_dist
+                )
+
             results.append((i, j, dist))
-    
+
     return results
 
 
@@ -189,7 +191,9 @@ def mp_phylogenetic_distance_matrix(
 
     # Process in parallel
     with Pool(processes=n_processes) as pool:
-        results = list(tqdm(pool.imap(_compute_distance_chunk_cached, chunks), total=len(chunks)))
+        results = list(
+            tqdm(pool.imap(_compute_distance_chunk_cached, chunks), total=len(chunks))
+        )
 
     # Fill the matrix
     for chunk_results in results:

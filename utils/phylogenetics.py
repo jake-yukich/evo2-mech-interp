@@ -7,7 +7,6 @@ from Bio import Entrez
 Entrez.email = "user.name@gmail.com"
 
 
-
 def get_tag_to_gtdb_accession_map(
     metadata_path: str = "../data/gtdb/bac120_metadata_r220.tsv",
 ) -> dict:
