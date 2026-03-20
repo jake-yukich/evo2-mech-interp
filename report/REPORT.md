@@ -2,6 +2,13 @@
 
 *A quick note before we start: this work was done in October 2025 as part of [ARENA 6.0](https://www.arena.education/)'s Capstone Week, and we never got around to writing it up at the time. We're publishing it now, ~5 months later, in the spirit of getting mostly-finished work out into the world rather than letting it sit forever on a hard drive. Some nuances may have been forgotten in this time, so don't take everything as gospel, although our overall takeaways that we were able to _roughly_ reproduce Goodfire's themes stand*
 
+## TL;DR
+
+We reproduced the qualitative finding from Goodfire's post — Evo 2's embeddings do encode phylogenetic structure, and learning a flat subspace makes that structure significantly more visible. Our quantitative correlations were weaker than Goodfire's (geodesic Pearson r=0.379 vs 0.78, flat subspace Pearson r=0.504 vs 0.98), most likely due to differences in species selection and dataset curation.
+
+![Geodesic distance vs phylogenetic distance — Goodfire (left, © Goodfire AI) vs ours (right)](images/geodesic_comparison.png)
+*Left: reproduced from [Goodfire AI](https://www.goodfire.ai/research/phylogeny-manifold). Right: our results.*
+
 ---
 
 As part of [ARENA 6.0](https://www.arena.education/)'s Capstone Week, we set out to reproduce recent work by [Goodfire](https://www.goodfire.ai/) on [Finding the Tree of Life in Evo 2](https://www.goodfire.ai/research/phylogeny-manifold). We had 4.5 days and one L40S GPU.
